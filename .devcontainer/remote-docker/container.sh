@@ -7,7 +7,7 @@ rd_load_config
 
 REPO_ROOT="$(cd "${RD_DIR}/../.." && pwd)"
 : "${PROJECT_NAME:=$(basename "$REPO_ROOT")}"
-: "${SHARED_VOLUMES:=vscode minikube-config}"
+: "${SHARED_VOLUMES:=minikube-config}"
 : "${VSCODE_SERVER_DIRNAME:=.vscode-server}"
 : "${CONTAINER_USER:=vscode}"
 : "${CONTAINER_UID_GID:=1000:1000}"

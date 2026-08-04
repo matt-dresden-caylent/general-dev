@@ -491,13 +491,19 @@ CREDS
 rdc_vscode_commit() {
   rd_require_cmd "$VSCODE_CLI" "Install the VS Code 'code' command: Command Palette > Shell Command: Install 'code' command in PATH"
 
-  local commit
-  commit="$("$VSCODE_CLI" --version 2> /dev/null | sed -n 2p | tr -d '[:space:]')"
+  local reported commit errors
+  errors="$(mktemp "${TMPDIR:-/tmp}/rdc-vscode-version.XXXXXX")"
+  reported="$("$VSCODE_CLI" --version 2> "$errors" || true)"
+  commit="$(printf '%s\n' "$reported" | sed -n 2p | tr -d '[:space:]')"
   case "$commit" in
     *[!0-9a-f]* | "")
       rd_fail "Could not read the VS Code build from '${VSCODE_CLI} --version'" \
         "Line 2 of that output is the build the container's server is keyed on, and it read:" \
         "$(rd_quote "${commit:-nothing}")" \
+        "" \
+        "It reported:" \
+        "$(rd_quote "${reported:-nothing on stdout}")" \
+        "$(rd_quote "$(cat "$errors")")" \
         "" \
         "Check the CLI belongs to the VS Code you connect with:  ${RD_BOLD}${VSCODE_CLI} --version${RD_RESET}" \
         "" \
@@ -505,6 +511,7 @@ rdc_vscode_commit() {
         "  ${RD_BOLD}SKIP_VSCODE_SERVER_SEED=1 make reopen${RD_RESET}"
       ;;
   esac
+  rm -f "$errors"
   printf '%s\n' "$commit"
 }
 

@@ -64,7 +64,6 @@
     "vscode": {
       "extensions": [
         "aws-scripting-guy.cform",
-        "ms-azuretools.vscode-docker",
         "ms-python.debugpy",
         "charliermarsh.ruff",
         "ms-python.python",

@@ -481,9 +481,111 @@ CREDS
 }
 
 : "${VSCODE_CLI:=code}"
+: "${VSCODE_SERVER_DIRNAME:=.vscode-server}"
+
+rdc_vscode_commit() {
+  rd_require_cmd "$VSCODE_CLI" "Install the VS Code 'code' command: Command Palette > Shell Command: Install 'code' command in PATH"
+
+  local commit
+  commit="$("$VSCODE_CLI" --version 2> /dev/null | sed -n 2p | tr -d '[:space:]')"
+  case "$commit" in
+    *[!0-9a-f]* | "")
+      rd_fail "Could not read the VS Code build from '${VSCODE_CLI} --version'" \
+        "Line 2 of that output is the build the container's server is keyed on, and it read:" \
+        "$(rd_quote "${commit:-nothing}")" \
+        "" \
+        "Check the CLI belongs to the VS Code you connect with:  ${RD_BOLD}${VSCODE_CLI} --version${RD_RESET}" \
+        "" \
+        "To open the window and let VS Code transfer the server itself:" \
+        "  ${RD_BOLD}SKIP_VSCODE_SERVER_SEED=1 make reopen${RD_RESET}"
+      ;;
+  esac
+  printf '%s\n' "$commit"
+}
+
+rdc_vscode_server_platform() {
+  local id="$1" os machine arch
+  os="$(rdc_exec_probe "$id" uname -s | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')"
+  machine="$(rdc_exec_probe "$id" uname -m | tr -d '[:space:]')"
+  case "$machine" in
+    aarch64 | arm64) arch=arm64 ;;
+    x86_64 | amd64) arch=x64 ;;
+    armv7l) arch=armhf ;;
+    *)
+      rd_fail "No VS Code server build is published for the container's architecture '${machine}'" \
+        "The download service names builds per architecture, and this is not one it publishes." \
+        "" \
+        "To open the window and let VS Code transfer the server itself:" \
+        "  ${RD_BOLD}SKIP_VSCODE_SERVER_SEED=1 make reopen${RD_RESET}"
+      ;;
+  esac
+  printf 'server-%s-%s\n' "$os" "$arch"
+}
+
+rdc_seed_vscode_server() {
+  local id="${1:-}"
+  [ -n "$id" ] || id="$(rdc_require_container)"
+
+  if [ "${SKIP_VSCODE_SERVER_SEED}" = "1" ]; then
+    rd_log "SKIP_VSCODE_SERVER_SEED=1, leaving the server transfer to VS Code"
+    return 0
+  fi
+
+  local commit home dir
+  commit="$(rdc_vscode_commit)"
+  home="$(rdc_exec_probe "$id" sh -c 'printf %s "$HOME"')"
+  [ -n "$home" ] || rd_die "could not read ${CONTAINER_USER}'s home directory from the container"
+  dir="${home}/${VSCODE_SERVER_DIRNAME}"
+
+  rdc_exec_probe "$id" awk -v target="$dir" \
+    '$2 == target { found = 1 } END { exit found ? 0 : 1 }' /proc/self/mounts \
+    || rd_fail "${dir} in the container is not a mount point, so a seeded server would not survive a rebuild" \
+      "devcontainer.json is meant to mount a volume there. Without it, VS Code reinstalls the server" \
+      "into the container's own filesystem every time one is built." \
+      "" \
+      "Check the mounts entry in ${RD_BOLD}.devcontainer/devcontainer.json${RD_RESET} targets ${dir}." \
+      "" \
+      "To open the window and let VS Code transfer the server itself:" \
+      "  ${RD_BOLD}SKIP_VSCODE_SERVER_SEED=1 make reopen${RD_RESET}"
+
+  if rdc_exec_probe "$id" test -x "${dir}/bin/${commit}/bin/code-server"; then
+    rd_ok "server for build ${commit} is already in the volume, nothing to fetch"
+    return 0
+  fi
+
+  local platform url
+  platform="$(rdc_vscode_server_platform "$id")"
+  url="${VSCODE_UPDATE_URL}/commit:${commit}/${platform}/${VSCODE_UPDATE_CHANNEL}"
+  rd_log "fetching ${platform} for build ${commit} inside the container"
+
+  rdc_exec_probe "$id" bash -c "
+set -euo pipefail
+incoming=\"${dir}/bin/${commit}.incoming.\$\$\"
+trap 'rm -rf \"\$incoming\"' EXIT
+mkdir -p \"\$incoming\"
+curl -fsSL --max-time '${VSCODE_SERVER_FETCH_TIMEOUT}' '${url}' | tar -xz --strip-components=1 -C \"\$incoming\"
+delivered=\"\$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))[\"commit\"])' \"\$incoming/product.json\")\"
+[ \"\$delivered\" = '${commit}' ] || { echo \"downloaded server reports build \$delivered, not ${commit}\" >&2; exit 1; }
+test -x \"\$incoming/bin/code-server\"
+mv -n \"\$incoming\" '${dir}/bin/${commit}'
+" || rd_fail "The VS Code server could not be fetched inside the container" \
+    "Nothing was installed, so VS Code will transfer it over the docker connection instead, which is" \
+    "what this avoids. The reason is in the output above." \
+    "" \
+    "Check the container can reach the download service:" \
+    "  ${RD_BOLD}make shell${RD_RESET}, then ${RD_BOLD}curl -sSI ${url}${RD_RESET}" \
+    "" \
+    "To open the window and accept the slow transfer:" \
+    "  ${RD_BOLD}SKIP_VSCODE_SERVER_SEED=1 make reopen${RD_RESET}"
+
+  rd_ok "server for build ${commit} seeded, VS Code will find it and transfer nothing"
+}
+
 rdc_reopen() {
   local id name workspace authority
   id="$(rdc_require_container)"
+
+  rdc_seed_vscode_server "$id"
   name="$(rdc_container_name "$id")"
 
   if [ "$(rdc_backend)" != "remote" ]; then
@@ -698,9 +800,10 @@ case "$RDC_COMMAND" in
   check) rdc_require_docker && rdc_check ;;
   build) rdc_require_docker && rdc_build ;;
   reopen) rdc_require_docker && rdc_reopen ;;
+  vscode-server) rdc_require_docker && rdc_seed_vscode_server ;;
   up) rdc_up ;;
   push-git-creds) rdc_require_docker && rdc_push_git_creds ;;
   clean) rdc_require_docker && rdc_clean ;;
   rebuild) rdc_require_docker && rdc_rebuild ;;
-  *) rd_die "usage: $(basename "$0") <up|status|start|stop|restart|rename|reopen|check|build|push-git-creds|clean|rebuild>" ;;
+  *) rd_die "usage: $(basename "$0") <up|status|start|stop|restart|rename|reopen|vscode-server|check|build|push-git-creds|clean|rebuild>" ;;
 esac

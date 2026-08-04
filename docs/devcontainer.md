@@ -75,7 +75,19 @@ EC2 reference, troubleshooting) live in
   the remote user's home and `${containerEnv:HOME}` is empty in this image;
   postCreate composes the same path from `/etc/passwd` instead, which is what
   makes the mismatch detectable. `make clean` removes the volume with the
-  container's other volumes, so the next build downloads the server once more.
+  container's other volumes, so the next build fetches the server once more.
+- `make reopen` seeds that volume before it opens the window, and `make
+  vscode-server` does it on demand. The build to fetch is only knowable on the
+  laptop, since VS Code updates itself between container builds, so postCreate
+  cannot have seeded what the next attach will look for: `code --version` line 2
+  is the build, the platform comes from `uname` in the container, and the tarball
+  is fetched from `VSCODE_UPDATE_URL` inside the container, off the tunnel. A
+  measured cold seed took 31s for download and extraction of 635 MB, against
+  252s for VS Code's own transfer. It verifies the `commit` in the delivered
+  `product.json` before moving it into place, extracts beside the target so an
+  interrupted fetch leaves no half-server where the extension probes, and does
+  nothing when the build is already present. `SKIP_VSCODE_SERVER_SEED=1` opens
+  the window without it.
 - Git repo detection: `git.autoRepositoryDetection: "subFolders"` +
   `git.repositoryScanMaxDepth: -1` + `git.openRepositoryInParentFolders:
   "never"`, every nested repo under the workspace root is detected at any

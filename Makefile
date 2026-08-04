@@ -26,7 +26,7 @@ PRIVATE_FILES ?= shell.env devcontainer-environment-variables.json .devcontainer
 .DEFAULT_GOAL := help
 .PHONY: help connect disconnect status shell start stop restart rename check build push-git-creds clean rebuild push-secrets \
         lint lint-md lint-sh lint-dispatch lint-json lint-private lint-nested format hooks-install hooks-uninstall hooks-run \
-        proxy-start proxy-stop proxy-restart proxy-status build-no-cache rebuild-no-cache local remote reopen init up
+        proxy-start proxy-stop proxy-restart proxy-status build-no-cache rebuild-no-cache local remote reopen init up vscode-server
 
 help:
 	@printf '\n\033[1mgeneral-dev\033[0m devcontainer control. Project: \033[1m%s\033[0m   Backend follows the active docker context.\n' "$(notdir $(CURDIR))"
@@ -50,6 +50,7 @@ help:
 	@printf '\n\033[1mLIFECYCLE\033[0m\n'
 	@printf '  \033[1;36m%-30s\033[0m %s\n' "make status"           "Backend, container, image and volumes. Read-only, so start here when something looks wrong."
 	@printf '  \033[1;36m%-30s\033[0m %s\n' "make reopen"           "Open the container in VS Code. Local opens the folder; remote names the container to attach to."
+	@printf '  \033[1;36m%-30s\033[0m %s\n' "make vscode-server"    "Fetch the VS Code server this machine needs inside the container. reopen does it for you."
 	@printf '  \033[1;36m%-30s\033[0m %s\n' "make start / stop"     "Start or stop the container. The checkout survives either way."
 	@printf '  \033[1;36m%-30s\033[0m %s\n' "make restart"          "Restart in place. Fixes a wedged container without rebuilding anything."
 	@printf '  \033[1;36m%-30s\033[0m %s\n' "make rename NAME=x"    "Give the container a readable name. New ones are <repo>-<devcontainerId>, which is too long to pick from a list."
@@ -166,6 +167,9 @@ remote: connect
 
 reopen:
 	@$(CONTAINER_SH) reopen
+
+vscode-server:
+	@$(CONTAINER_SH) vscode-server
 
 push-git-creds:
 	@$(CONTAINER_SH) push-git-creds

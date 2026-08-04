@@ -26,7 +26,8 @@
     },
     "ghcr.io/devcontainers/features/python:1": {
       "version": "3.14",
-      "installTools": "true"
+      "installTools": "true",
+      "toolsToInstall": "flake8,black,yapf,mypy,pydocstyle,pycodestyle,bandit,pipenv,virtualenv,pytest,pylint"
     },
     "ghcr.io/devcontainers/features/node:2.1.0": {
       "version": "25",

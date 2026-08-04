@@ -109,7 +109,7 @@
         },
         "terminal.integrated.defaultProfile.linux": "tmux",
         "terminal.integrated.enablePersistentSessions": true,
-        "terminal.integrated.persistentSessionReviveProcess": "onExitAndWindowClose",
+        "terminal.integrated.persistentSessionReviveProcess": "never",
         "terminal.integrated.scrollback": 100000,
         "terminal.integrated.persistentSessionScrollback": 100000,
         "git.detectSubmodules": true,

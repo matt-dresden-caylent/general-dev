@@ -34,6 +34,19 @@ EC2 reference, troubleshooting) live in
   that exist and opens the one you name: a VS Code profile is fixed
   configuration written when the container is built and cannot enumerate
   sessions created later. A plain non-persistent shell is the `zsh` profile.
+- `terminal.integrated.persistentSessionReviveProcess` is `never`. VS Code
+  restores a persisted terminal by relaunching its executable without the args it
+  was started with, so a tab launched as `tmux new-session -A -s main zsh` came
+  back as bare `tmux`, which does not attach to anything: it created a fresh
+  auto-numbered session. They accumulated one or more per reattach, and the tmux
+  server outlives the connection, so they never went away. The evidence was in
+  `~/.vscode-server/data/logs/*/ptyhost.log`, where every restore logged
+  `args undefined` next to the profile launches that logged full args, and each
+  one matched a numbered session to the second. `never` switches off recreating a
+  dead process; reconnecting to a live one is unaffected. Nothing is lost, since
+  scrollback lives in tmux via `history-limit`, not in VS Code's replay buffer.
+  Because it is a setting, it reaches a container only when VS Code seeds
+  `data/Machine/settings.json`, which is on a rebuild.
 - `.devcontainer/tmux.conf`, installed to `~/.tmux.conf` by postCreate, turns
   the mouse on so the wheel scrolls and clicks select, raises tmux's own
   scrollback from its 2000-line default, lists every session on the status bar,

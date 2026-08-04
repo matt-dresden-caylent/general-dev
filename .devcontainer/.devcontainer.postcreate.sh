@@ -1,14 +1,4 @@
 #!/usr/bin/env bash
-# Provisions the devcontainer with everything that depends on values only known
-# at create time, secrets fetched from Parameter Store, the developer's git
-# identity, the AWS profile map. Anything installable is a devcontainer.json
-# feature instead, so this script configures rather than installs.
-#
-# Usage: .devcontainer.postcreate.sh <container-user>
-#
-# Every value below is overridable from the environment; nothing is fixed in
-# code. Sections whose dependency is absent are skipped with a banner rather
-# than aborting, so a container missing one feature still provisions.
 
 set -euo pipefail
 
@@ -18,9 +8,6 @@ WORK_DIR="$(pwd)"
 # shellcheck source=devcontainer-functions.sh
 source "${WORK_DIR}/.devcontainer/devcontainer-functions.sh"
 
-############
-# Settings #
-############
 : "${CICD:=false}"
 : "${AWS_CONFIG_ENABLED:=true}"
 : "${AWS_DEFAULT_OUTPUT:=json}"
@@ -30,19 +17,12 @@ source "${WORK_DIR}/.devcontainer/devcontainer-functions.sh"
 : "${DEVCONTAINER_ZSH_THEME:=obraun}"
 : "${DEVCONTAINER_ZSH_CORRECTION:=false}"
 : "${DEVCONTAINER_ZSH_HIST_STAMPS:=%m/%d/%Y - %H:%M:%S}"
-# Flags the ccd/ccdr aliases pass to the Claude CLI.
 : "${DEVCONTAINER_CLAUDE_FLAGS:=--dangerously-skip-permissions}"
-# Prepended to PATH for the container user and for project-setup.sh.
 : "${DEVCONTAINER_EXTRA_PATH:=/usr/local/py-utils/bin:/usr/local/python/current/bin}"
+: "${DEVCONTAINER_VSCODE_SERVER_DIRNAME:=.vscode-server}"
 : "${DEVCONTAINER_REPOS_DIR:=repos}"
 : "${DEVCONTAINER_REPO_SCAN_IGNORE:=node_modules .venv venv __pycache__ .mypy_cache .pytest_cache .ruff_cache dist build target .next}"
 
-###########
-# Derived #
-###########
-# Read the home directory rather than assuming /home/<user>: the account is
-# supplied by whatever base image devcontainer.json names, and its home is that
-# image's decision.
 USER_HOME="$(getent passwd "${CONTAINER_USER}" | cut -d: -f6)"
 [ -n "${USER_HOME}" ] || exit_with_error "user '${CONTAINER_USER}' has no home directory in /etc/passwd"
 
@@ -58,25 +38,16 @@ AWS_PROFILE_MAP_FILE="${WORK_DIR}/.devcontainer/aws-profile-map.json"
 REPOS_PATH="${WORK_DIR}/${DEVCONTAINER_REPOS_DIR}"
 RESMON_DISKS="${WORK_DIR}/.devcontainer/resmon-disks.py"
 
-# Where postAttachCommand looks for the script. devcontainer.json names this
-# path literally, because a hook string cannot resolve it, so the two files have
-# to agree: changing it here needs the same change there. remoteEnv in that file
-# already puts this directory on PATH; nothing created it until now.
 USER_BIN="${USER_HOME}/.local/bin"
 RESMON_DISKS_HOOK="${USER_BIN}/$(basename "${RESMON_DISKS}")"
+
+VSCODE_SERVER_DIR="${USER_HOME}/${DEVCONTAINER_VSCODE_SERVER_DIRNAME}"
 
 WARNINGS=()
 is_cicd() { [ "${CICD,,}" = "true" ]; }
 
 export PATH="${DEVCONTAINER_EXTRA_PATH}:${USER_BIN}:${PATH}"
 
-############
-# Sections #
-############
-
-# shell.env carries the developer's environment and is fetched from Parameter
-# Store by the wrapper. bash reads .bashrc when interactive and BASH_ENV when
-# not; zsh reads .zshenv for both.
 configure_shell_env() {
   [ -f "${SHELL_ENV}" ] || exit_with_error "shell.env not found at ${SHELL_ENV}"
   log_section "Shell environment" "sourcing shell.env from bash and zsh"
@@ -96,9 +67,6 @@ configure_shell_env() {
   log_section_done "Shell environment"
 }
 
-# Run a command as the container user, so anything it creates is correctly owned
-# and anything it tests is tested with that account's permissions rather than
-# root's. WSL cannot use sudo -u, so only the invocation differs between the two.
 as_container_user() {
   if is_wsl; then
     bash -c "$1"
@@ -107,15 +75,12 @@ as_container_user() {
   fi
 }
 
-# Interactive rc files that should carry aliases and functions. Written once
-# and applied to each, so bash and zsh cannot drift apart.
 interactive_rcs() {
   printf '%s\n' "${BASH_RC}"
   [ -f "${ZSH_RC}" ] && printf '%s\n' "${ZSH_RC}"
   return 0
 }
 
-# Depends on: claude-code feature.
 configure_claude_aliases() {
   if ! container_user_has claude; then
     log_section_skipped "Claude Code aliases" \
@@ -133,8 +98,6 @@ configure_claude_aliases() {
   log_section_done "Claude Code aliases"
 }
 
-# Depends on: tmux, from the apt-packages feature. The tm* helpers take
-# arguments and --help, so they are functions in a sourced file, not aliases.
 configure_tmux_commands() {
   if ! container_user_has tmux; then
     log_section_skipped "tmux commands" \
@@ -151,14 +114,8 @@ configure_tmux_commands() {
   while read -r rc; do
     echo "source \"${TMUX_COMMANDS}\"" >> "${rc}"
   done < <(interactive_rcs)
-  # tmux reads this once, when the server starts. Copied rather than sourced
-  # from the workspace so a session still comes up correctly if the checkout is
-  # not mounted where it was built.
   install -m 644 "${TMUX_CONF}" "${USER_HOME}/.tmux.conf"
 
-  # default-shell has to be an absolute path and the committed config cannot
-  # know where zsh landed, so it is resolved here. Without this every window
-  # opens the account's login shell, which is bash.
   local zsh_path
   zsh_path="$(container_user_path_to zsh)"
   [ -n "${zsh_path}" ] || exit_with_error \
@@ -170,34 +127,34 @@ configure_tmux_commands() {
   log_section_done "tmux commands"
 }
 
-# Depends on: python3, from the python feature, and the script itself. Both are
-# required rather than optional, so this section aborts where the ones above skip
-# with a banner: devcontainer.json runs `python3 $HOME/.local/bin/resmon-disks.py`
-# from postAttachCommand unconditionally, so skipping would leave a container
-# whose every attach fails. A build that stops here says so once, with the
-# remedy; the alternative reports it on every attach, after provisioning claimed
-# to have succeeded.
-#
-# resmon-disks.py runs from postAttachCommand, and that hook's working directory
-# is not the workspace on every route into the container. On the remote engine
-# the workspace is a volume with no local path, so VS Code attaches to the
-# container by name, and an attached container carries no workspaceFolder for the
-# extension to run hooks in: it uses the home directory. A workspace-relative
-# command therefore resolved to ~/.devcontainer/resmon-disks.py, and the hook
-# died with exit 2 on every attach, taking the Resource Monitor's disk figures
-# with it. Linking the script somewhere the hook can always name fixes it for
-# both routes at once.
-#
-# Linked rather than copied, unlike .tmux.conf: tmux reads its config once when
-# its server starts, which can be before the workspace is there, while this only
-# ever runs on attach, when the workspace is mounted by definition. So there is
-# one copy of the script, and editing it takes effect on the next attach.
+is_mount_point() {
+  awk -v target="$1" '$2 == target { found = 1 } END { exit found ? 0 : 1 }' /proc/self/mounts
+}
+
+configure_vscode_server_dir() {
+  if ! is_mount_point "${VSCODE_SERVER_DIR}"; then
+    exit_with_error "$(printf '%s\n' \
+      "${VSCODE_SERVER_DIR} is not a mount point, so the VS Code server would be reinstalled on every rebuild." \
+      "devcontainer.json must mount a volume there. Its target is a literal path and this one is" \
+      "derived from ${CONTAINER_USER}'s home in /etc/passwd, so they disagree: check the mounts entry," \
+      "remoteUser, and DEVCONTAINER_VSCODE_SERVER_DIRNAME (currently '${DEVCONTAINER_VSCODE_SERVER_DIRNAME}').")"
+  fi
+
+  log_section "VS Code server directory" "${VSCODE_SERVER_DIR}"
+  chown "${CONTAINER_USER}:${CONTAINER_USER}" "${VSCODE_SERVER_DIR}"
+
+  as_container_user "test -w '${VSCODE_SERVER_DIR}'" \
+    || exit_with_error \
+      "${CONTAINER_USER} cannot write ${VSCODE_SERVER_DIR}, so VS Code could not install its server there"
+
+  log_section_done "VS Code server directory" \
+    "$(du -sh "${VSCODE_SERVER_DIR}" | cut -f1) carried over, rebuilds reuse it"
+}
+
 configure_resmon_disks() {
   [ -f "${RESMON_DISKS}" ] || exit_with_error \
     "resmon script not found at ${RESMON_DISKS}, which postAttachCommand runs on every attach"
 
-  # Resolved rather than run as a bare name: PATH under sudo is not the container
-  # user's, and the answer is what proves the interpreter the hook names exists.
   local python
   python="$(container_user_path_to python3)"
   [ -n "${python}" ] || exit_with_error \
@@ -208,15 +165,6 @@ configure_resmon_disks() {
   install -d -m 755 "${USER_BIN}"
   ln -sfn "${RESMON_DISKS}" "${RESMON_DISKS_HOOK}"
 
-  # Run it as the account the hook runs as, rather than assuming the link works:
-  # that proves python3 resolves, the link resolves, and the file is readable by
-  # that user, which root reading it does not. VS Code has not written its
-  # settings this early, so the script says so and exits 0 without touching
-  # anything; the first attach after this is what sets the drives.
-  #
-  # HOME is named rather than inherited because the script derives the settings
-  # path from it, and the WSL branch of as_container_user does not go through
-  # sudo, so it would inherit root's and check a file nothing ever reads.
   as_container_user "HOME='${USER_HOME}' '${python}' '${RESMON_DISKS_HOOK}'" \
     || exit_with_error \
       "${RESMON_DISKS_HOOK} does not run, so postAttachCommand would fail on every attach"
@@ -224,7 +172,6 @@ configure_resmon_disks() {
   log_section_done "Resource Monitor disks"
 }
 
-# Depends on: common-utils feature (installOhMyZsh) and a .zshrc to edit.
 configure_oh_my_zsh() {
   if [ ! -d "${USER_HOME}/.oh-my-zsh" ] || [ ! -f "${ZSH_RC}" ]; then
     log_section_skipped "Oh My Zsh configuration" \
@@ -233,9 +180,6 @@ configure_oh_my_zsh() {
   fi
   log_section "Oh My Zsh configuration" "theme ${DEVCONTAINER_ZSH_THEME}"
 
-  # The shipped .zshrc already exports ZSH and sources the framework. Settings
-  # oh-my-zsh reads at load time are edited in place: appending them would apply
-  # after it had loaded, and re-sourcing here would load it twice.
   sed -i \
     -e "s|^ZSH_THEME=.*|ZSH_THEME=\"${DEVCONTAINER_ZSH_THEME}\"|" \
     -e "s|^# *ENABLE_CORRECTION=.*|ENABLE_CORRECTION=\"${DEVCONTAINER_ZSH_CORRECTION}\"|" \
@@ -247,8 +191,6 @@ configure_oh_my_zsh() {
   log_section_done "Oh My Zsh configuration"
 }
 
-# Depends on: jq, and a profile map to read. An absent or empty map means there
-# are no profiles to generate; malformed content is an error, not an absence.
 configure_aws_profiles() {
   if is_cicd; then
     log_section_skipped "AWS profile configuration" "CICD mode"
@@ -291,7 +233,6 @@ configure_aws_profiles() {
     "$(grep -c '^\[profile' "${USER_HOME}/.aws/config") profile(s) written"
 }
 
-# Only reachable when a host proxy is declared; validates it answers.
 validate_proxy() {
   if [ "${HOST_PROXY,,}" != "true" ]; then
     log_info "Host proxy not enabled (HOST_PROXY=${HOST_PROXY})"
@@ -308,8 +249,6 @@ validate_proxy() {
   log_section_done "Host proxy validation"
 }
 
-# Depends on: git. Identity comes from shell.env; the credential itself is
-# supplied separately by `make push-git-creds`.
 configure_git() {
   if is_cicd; then
     log_section_skipped "Git configuration" "CICD mode"
@@ -380,15 +319,12 @@ configure_repo_detection() {
   log_section_done "Repository detection"
 }
 
-# Hand the home directory back to the container user: this script runs as root,
-# so anything it wrote is root-owned until now.
 fix_ownership() {
-  log_info "Setting ownership of ${USER_HOME} to ${CONTAINER_USER}"
-  chown -R "${CONTAINER_USER}:${CONTAINER_USER}" "${USER_HOME}"
+  log_info "Setting ownership of ${USER_HOME} to ${CONTAINER_USER} (excluding ${VSCODE_SERVER_DIR})"
+  find "${USER_HOME}" -path "${VSCODE_SERVER_DIR}" -prune -o \
+    -exec chown "${CONTAINER_USER}:${CONTAINER_USER}" {} +
 }
 
-# Runs as the container user so anything it creates is correctly owned; see
-# as_container_user for how that is arranged on each platform.
 run_project_setup() {
   if [ ! -f "${PROJECT_SETUP}" ]; then
     log_warn "No project setup script at ${PROJECT_SETUP}"
@@ -415,18 +351,13 @@ report_warnings() {
   log_warn_summary "${WARNINGS[@]}"
 }
 
-########
-# Main #
-########
 main() {
   log_info "Starting post-create setup as '${CONTAINER_USER}' (CICD=${CICD})"
   [ -n "${DEFAULT_GIT_BRANCH:-}" ] || exit_with_error "DEFAULT_GIT_BRANCH is not set in the environment"
 
-  # Runs here rather than in the wrapper because writing /etc/apt needs root.
-  # Nothing at provisioning time installs packages any more, but a developer
-  # running apt by hand behind a host proxy needs this.
   configure_apt_proxy
 
+  configure_vscode_server_dir
   configure_shell_env
   configure_claude_aliases
   configure_tmux_commands

@@ -59,6 +59,23 @@ EC2 reference, troubleshooting) live in
   `postAttachCommand … failed with exit code 2` and no disk figures. postCreate
   verifies the link by running it as the container user, so a broken one fails
   the build instead of every attach.
+- `mounts` puts a volume, `vscode-server-<repo>`, over
+  `/home/vscode/.vscode-server`. VS Code installs its headless server there by
+  piping ~200 MiB from the laptop into the container, which crosses the SSM
+  tunnel on the remote engine: 252s at 836 kB/s in a measured build. The volume
+  outlives the container, so a rebuild finds `bin/<vscode-build>` already
+  present, and the extension's check (`test -d`) skips the transfer entirely.
+  Per project rather than engine-wide, because two containers sharing one server
+  directory would collide on `data/Machine/.devport-<build>` and the connection
+  token. `configure_vscode_server_dir` in postCreate hands the mount point to
+  the container user, since Docker creates a named volume root-owned and the
+  server installs as `vscode`, and it aborts the build if that path is not a
+  mount point, so a config that stopped mounting it cannot go unnoticed. The
+  target is a literal path there because no devcontainer variable resolves to
+  the remote user's home and `${containerEnv:HOME}` is empty in this image;
+  postCreate composes the same path from `/etc/passwd` instead, which is what
+  makes the mismatch detectable. `make clean` removes the volume with the
+  container's other volumes, so the next build downloads the server once more.
 - Git repo detection: `git.autoRepositoryDetection: "subFolders"` +
   `git.repositoryScanMaxDepth: -1` + `git.openRepositoryInParentFolders:
   "never"`, every nested repo under the workspace root is detected at any
@@ -100,6 +117,7 @@ EC2 reference, troubleshooting) live in
    | Step | Depends on |
    |---|---|
    | apt proxy config (root-only, for later manual `apt` use) | `HTTP_PROXY` set |
+   | `~/.vscode-server` handed to the container user | the `mounts` volume, required |
    | `shell.env` sourcing into `.bashrc` / `.zshenv` |, |
    | `ccd` / `ccdr` aliases | `claude-code` feature |
    | `tm-*` commands sourced into both shells | `tmux` |

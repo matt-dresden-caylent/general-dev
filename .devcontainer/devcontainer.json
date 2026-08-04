@@ -13,6 +13,13 @@
     "--label",
     "devcontainer.project=${localWorkspaceFolderBasename}"
   ],
+  "mounts": [
+    {
+      "type": "volume",
+      "source": "vscode-server-${localWorkspaceFolderBasename}",
+      "target": "/home/vscode/.vscode-server"
+    }
+  ],
   "features": {
     "ghcr.io/devcontainers/features/aws-cli:1": {
       "version": "latest"

@@ -60,7 +60,7 @@ EC2 reference, troubleshooting) live in
   verifies the link by running it as the container user, so a broken one fails
   the build instead of every attach.
 - `mounts` puts a volume, `vscode-server-<repo>`, over
-  `/home/vscode/.vscode-server`. VS Code installs its headless server there by
+  `/home/vscode/.vscode-server/bin`. VS Code installs its headless server there by
   piping ~200 MiB from the laptop into the container, which crosses the SSM
   tunnel on the remote engine: 252s at 836 kB/s in a measured build. The volume
   outlives the container, so a rebuild finds `bin/<vscode-build>` already
@@ -77,6 +77,14 @@ EC2 reference, troubleshooting) live in
   makes the mismatch detectable. `make clean` keeps it, identified by its mount
   point rather than its name, so a teardown does not throw away a cache that
   costs a fetch to rebuild.
+- Only `bin/` is on that volume, deliberately. VS Code seeds
+  `data/Machine/settings.json` from `customizations.vscode.settings` only when
+  that file does not exist, so a volume over the whole of `~/.vscode-server`
+  would freeze the in-container settings permanently: no later edit to
+  `devcontainer.json` would ever reach a rebuilt container. `data/` and
+  `extensions/` therefore stay on the container filesystem, which is what makes
+  a rebuild the way to apply a settings change. Extensions reinstall from the
+  marketplace inside the container, 6s for 19 of them in a measured build.
 - `make reopen` seeds that volume before it opens the window, and `make
   vscode-server` does it on demand. The build to fetch is only knowable on the
   laptop, since VS Code updates itself between container builds, so postCreate

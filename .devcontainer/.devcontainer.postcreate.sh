@@ -21,6 +21,7 @@ source "${WORK_DIR}/.devcontainer/devcontainer-functions.sh"
 : "${DEVCONTAINER_EXTRA_PATH:=/usr/local/py-utils/bin:/usr/local/python/current/bin}"
 : "${DEVCONTAINER_NPM_GLOBAL_DIRS:=lib/node_modules bin}"
 : "${DEVCONTAINER_VSCODE_SERVER_DIRNAME:=.vscode-server}"
+: "${DEVCONTAINER_VSCODE_SERVER_CACHE_SUBDIR:=bin}"
 : "${DEVCONTAINER_REPOS_DIR:=repos}"
 : "${DEVCONTAINER_REPO_SCAN_IGNORE:=node_modules .venv venv __pycache__ .mypy_cache .pytest_cache .ruff_cache dist build target .next}"
 
@@ -43,6 +44,7 @@ USER_BIN="${USER_HOME}/.local/bin"
 RESMON_DISKS_HOOK="${USER_BIN}/$(basename "${RESMON_DISKS}")"
 
 VSCODE_SERVER_DIR="${USER_HOME}/${DEVCONTAINER_VSCODE_SERVER_DIRNAME}"
+VSCODE_SERVER_CACHE="${VSCODE_SERVER_DIR}/${DEVCONTAINER_VSCODE_SERVER_CACHE_SUBDIR}"
 
 WARNINGS=()
 is_cicd() { [ "${CICD,,}" = "true" ]; }
@@ -168,23 +170,24 @@ is_mount_point() {
 }
 
 configure_vscode_server_dir() {
-  if ! is_mount_point "${VSCODE_SERVER_DIR}"; then
+  if ! is_mount_point "${VSCODE_SERVER_CACHE}"; then
     exit_with_error "$(printf '%s\n' \
-      "${VSCODE_SERVER_DIR} is not a mount point, so the VS Code server would be reinstalled on every rebuild." \
+      "${VSCODE_SERVER_CACHE} is not a mount point, so the VS Code server would be reinstalled on every rebuild." \
       "devcontainer.json must mount a volume there. Its target is a literal path and this one is" \
       "derived from ${CONTAINER_USER}'s home in /etc/passwd, so they disagree: check the mounts entry," \
-      "remoteUser, and DEVCONTAINER_VSCODE_SERVER_DIRNAME (currently '${DEVCONTAINER_VSCODE_SERVER_DIRNAME}').")"
+      "remoteUser, DEVCONTAINER_VSCODE_SERVER_DIRNAME ('${DEVCONTAINER_VSCODE_SERVER_DIRNAME}') and" \
+      "DEVCONTAINER_VSCODE_SERVER_CACHE_SUBDIR ('${DEVCONTAINER_VSCODE_SERVER_CACHE_SUBDIR}').")"
   fi
 
-  log_section "VS Code server directory" "${VSCODE_SERVER_DIR}"
-  chown "${CONTAINER_USER}:${CONTAINER_USER}" "${VSCODE_SERVER_DIR}"
+  log_section "VS Code server cache" "${VSCODE_SERVER_CACHE}"
+  chown "${CONTAINER_USER}:${CONTAINER_USER}" "${VSCODE_SERVER_DIR}" "${VSCODE_SERVER_CACHE}"
 
-  as_container_user "test -w '${VSCODE_SERVER_DIR}'" \
+  as_container_user "test -w '${VSCODE_SERVER_DIR}' && test -w '${VSCODE_SERVER_CACHE}'" \
     || exit_with_error \
-      "${CONTAINER_USER} cannot write ${VSCODE_SERVER_DIR}, so VS Code could not install its server there"
+      "${CONTAINER_USER} cannot write ${VSCODE_SERVER_DIR} or ${VSCODE_SERVER_CACHE}, so VS Code could not install its server there"
 
-  log_section_done "VS Code server directory" \
-    "$(du -sh "${VSCODE_SERVER_DIR}" | cut -f1) carried over, rebuilds reuse it"
+  log_section_done "VS Code server cache" \
+    "$(du -sh "${VSCODE_SERVER_CACHE}" | cut -f1) carried over, rebuilds reuse it"
 }
 
 configure_resmon_disks() {
@@ -356,8 +359,8 @@ configure_repo_detection() {
 }
 
 fix_ownership() {
-  log_info "Setting ownership of ${USER_HOME} to ${CONTAINER_USER} (excluding ${VSCODE_SERVER_DIR})"
-  find "${USER_HOME}" -path "${VSCODE_SERVER_DIR}" -prune -o \
+  log_info "Setting ownership of ${USER_HOME} to ${CONTAINER_USER} (excluding ${VSCODE_SERVER_CACHE})"
+  find "${USER_HOME}" -path "${VSCODE_SERVER_CACHE}" -prune -o \
     -exec chown "${CONTAINER_USER}:${CONTAINER_USER}" {} +
 }
 

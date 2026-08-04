@@ -9,6 +9,7 @@ REPO_ROOT="$(cd "${RD_DIR}/../.." && pwd)"
 : "${PROJECT_NAME:=$(basename "$REPO_ROOT")}"
 : "${SHARED_VOLUMES:=minikube-config}"
 : "${VSCODE_SERVER_DIRNAME:=.vscode-server}"
+: "${VSCODE_SERVER_CACHE_SUBDIR:=bin}"
 : "${CONTAINER_USER:=vscode}"
 : "${CONTAINER_UID_GID:=1000:1000}"
 : "${CLONE_IMAGE:=mcr.microsoft.com/devcontainers/base:noble}"
@@ -171,7 +172,7 @@ rdc_project_volumes() {
           *" ${vol} "*) continue ;;
         esac
         case "$target" in
-          */"${VSCODE_SERVER_DIRNAME}") continue ;;
+          */"${VSCODE_SERVER_DIRNAME}/${VSCODE_SERVER_CACHE_SUBDIR}") continue ;;
         esac
         printf '%s\n' "$vol"
       done
@@ -539,7 +540,7 @@ rdc_seed_vscode_server() {
   commit="$(rdc_vscode_commit)"
   home="$(rdc_exec_probe "$id" sh -c 'printf %s "$HOME"')"
   [ -n "$home" ] || rd_die "could not read ${CONTAINER_USER}'s home directory from the container"
-  dir="${home}/${VSCODE_SERVER_DIRNAME}"
+  dir="${home}/${VSCODE_SERVER_DIRNAME}/${VSCODE_SERVER_CACHE_SUBDIR}"
 
   rdc_exec_probe "$id" awk -v target="$dir" \
     '$2 == target { found = 1 } END { exit found ? 0 : 1 }' /proc/self/mounts \
@@ -552,7 +553,7 @@ rdc_seed_vscode_server() {
       "To open the window and let VS Code transfer the server itself:" \
       "  ${RD_BOLD}SKIP_VSCODE_SERVER_SEED=1 make reopen${RD_RESET}"
 
-  if rdc_exec_probe "$id" test -x "${dir}/bin/${commit}/bin/code-server"; then
+  if rdc_exec_probe "$id" test -x "${dir}/${commit}/bin/code-server"; then
     rd_ok "server for build ${commit} is already in the volume, nothing to fetch"
     return 0
   fi
@@ -564,14 +565,14 @@ rdc_seed_vscode_server() {
 
   rdc_exec_probe "$id" bash -c "
 set -euo pipefail
-incoming=\"${dir}/bin/${commit}.incoming.\$\$\"
+incoming=\"${dir}/${commit}.incoming.\$\$\"
 trap 'rm -rf \"\$incoming\"' EXIT
 mkdir -p \"\$incoming\"
 curl -fsSL --max-time '${VSCODE_SERVER_FETCH_TIMEOUT}' '${url}' | tar -xz --strip-components=1 -C \"\$incoming\"
 delivered=\"\$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))[\"commit\"])' \"\$incoming/product.json\")\"
 [ \"\$delivered\" = '${commit}' ] || { echo \"downloaded server reports build \$delivered, not ${commit}\" >&2; exit 1; }
 test -x \"\$incoming/bin/code-server\"
-mv -n \"\$incoming\" '${dir}/bin/${commit}'
+mv -n \"\$incoming\" '${dir}/${commit}'
 " || rd_fail "The VS Code server could not be fetched inside the container" \
     "Nothing was installed, so VS Code will transfer it over the docker connection instead, which is" \
     "what this avoids. The reason is in the output above." \

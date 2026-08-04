@@ -17,7 +17,7 @@
     {
       "type": "volume",
       "source": "vscode-server-${localWorkspaceFolderBasename}",
-      "target": "/home/vscode/.vscode-server"
+      "target": "/home/vscode/.vscode-server/bin"
     }
   ],
   "features": {

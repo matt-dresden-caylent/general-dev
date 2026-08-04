@@ -102,14 +102,18 @@ EC2 reference, troubleshooting) live in
   the one `\*/.devcontainer/devcontainer.json` under `/workspaces`, since an
   attached container gives a hook no workspace path, and fails when that is not
   exactly one file; `DEVCONTAINER_CONFIG` names it directly.
-- Only `bin/` is on that volume, deliberately. VS Code seeds
+- `extensionsCache` is on a second volume, `vscode-extensions-cache-<repo>`.
+  Without it VS Code copies the extension packages it has cached on the laptop
+  into each new container over the docker connection, 23.4s in and 11.2s tarring
+  them back in a measured build, both across the tunnel on the remote engine.
+  Kept between containers, the packages are already there.
+- `data/` and `extensions/` are deliberately not on a volume. VS Code seeds
   `data/Machine/settings.json` from `customizations.vscode.settings` only when
-  that file does not exist, so a volume over the whole of `~/.vscode-server`
-  would freeze the in-container settings permanently: no later edit to
-  `devcontainer.json` would ever reach a rebuilt container. `data/` and
-  `extensions/` therefore stay on the container filesystem, which is what makes
-  a rebuild the way to apply a settings change. Extensions reinstall from the
-  marketplace inside the container, 6s for 19 of them in a measured build.
+  that file does not exist, so persisting `data/` would freeze the in-container
+  settings; `extensions/` is what VS Code installs from the cache, 6s for 19 of
+  them in a measured build, so persisting it would only risk a set that no longer
+  matches the server build. `DEVCONTAINER_VSCODE_SERVER_VOLUMES` names the
+  directories postCreate expects to find mounted.
 - `make reopen` seeds that volume before it opens the window, and `make
   vscode-server` does it on demand. The build to fetch is only knowable on the
   laptop, since VS Code updates itself between container builds, so postCreate

@@ -172,7 +172,7 @@ rdc_project_volumes() {
           *" ${vol} "*) continue ;;
         esac
         case "$target" in
-          */"${VSCODE_SERVER_DIRNAME}/${VSCODE_SERVER_CACHE_SUBDIR}") continue ;;
+          */"${VSCODE_SERVER_DIRNAME}"/*) continue ;;
         esac
         printf '%s\n' "$vol"
       done

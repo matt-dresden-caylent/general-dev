@@ -18,6 +18,11 @@
       "type": "volume",
       "source": "vscode-server-${localWorkspaceFolderBasename}",
       "target": "/home/vscode/.vscode-server/bin"
+    },
+    {
+      "type": "volume",
+      "source": "vscode-extensions-cache-${localWorkspaceFolderBasename}",
+      "target": "/home/vscode/.vscode-server/extensionsCache"
     }
   ],
   "features": {

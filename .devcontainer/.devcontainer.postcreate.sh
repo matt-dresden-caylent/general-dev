@@ -19,6 +19,7 @@ source "${WORK_DIR}/.devcontainer/devcontainer-functions.sh"
 : "${DEVCONTAINER_ZSH_HIST_STAMPS:=%m/%d/%Y - %H:%M:%S}"
 : "${DEVCONTAINER_CLAUDE_FLAGS:=--dangerously-skip-permissions}"
 : "${DEVCONTAINER_EXTRA_PATH:=/usr/local/py-utils/bin:/usr/local/python/current/bin}"
+: "${DEVCONTAINER_NPM_GLOBAL_DIRS:=lib/node_modules bin}"
 : "${DEVCONTAINER_VSCODE_SERVER_DIRNAME:=.vscode-server}"
 : "${DEVCONTAINER_REPOS_DIR:=repos}"
 : "${DEVCONTAINER_REPO_SCAN_IGNORE:=node_modules .venv venv __pycache__ .mypy_cache .pytest_cache .ruff_cache dist build target .next}"
@@ -80,6 +81,40 @@ interactive_rcs() {
   printf '%s\n' "${BASH_RC}"
   [ -f "${ZSH_RC}" ] && printf '%s\n' "${ZSH_RC}"
   return 0
+}
+
+configure_npm_global_ownership() {
+  if ! container_user_has npm; then
+    log_section_skipped "Global npm ownership" \
+      "npm is not installed, add the node feature to devcontainer.json"
+    return 0
+  fi
+  [ -n "${DEVCONTAINER_NPM_GLOBAL_DIRS}" ] \
+    || exit_with_error "DEVCONTAINER_NPM_GLOBAL_DIRS must name at least one directory"
+
+  local user_path="${CONTAINER_USER_PATH:-${PATH}}"
+  local prefix
+  prefix="$(as_container_user "PATH='${user_path}' npm prefix -g")"
+  [ -n "${prefix}" ] || exit_with_error "npm did not report a global prefix"
+  [ -d "${prefix}" ] \
+    || exit_with_error "npm reports a global prefix that does not exist: ${prefix}"
+
+  log_section "Global npm ownership" "${prefix} -> ${CONTAINER_USER}"
+
+  local -a names targets=()
+  local name
+  read -ra names <<< "${DEVCONTAINER_NPM_GLOBAL_DIRS}"
+  for name in "${names[@]}"; do
+    [ -d "${prefix}/${name}" ] \
+      || exit_with_error "${prefix}/${name} is missing, so the npm prefix is not laid out as expected"
+    targets+=("${prefix}/${name}")
+  done
+  chown -R "${CONTAINER_USER}" "${targets[@]}"
+
+  as_container_user "test -w '${prefix}/lib/node_modules'" \
+    || exit_with_error "${CONTAINER_USER} still cannot write ${prefix}/lib/node_modules"
+
+  log_section_done "Global npm ownership"
 }
 
 configure_claude_aliases() {
@@ -360,6 +395,7 @@ main() {
 
   configure_vscode_server_dir
   configure_shell_env
+  configure_npm_global_ownership
   configure_claude_aliases
   configure_tmux_commands
   configure_resmon_disks

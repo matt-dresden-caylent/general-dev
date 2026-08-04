@@ -130,6 +130,7 @@ EC2 reference, troubleshooting) live in
    | Step | Depends on |
    |---|---|
    | apt proxy config (root-only, for later manual `apt` use) | `HTTP_PROXY` set |
+   | global npm prefix handed to the container user | the node feature |
    | `~/.vscode-server` handed to the container user | the `mounts` volume, required |
    | `shell.env` sourcing into `.bashrc` / `.zshenv` |, |
    | `ccd` / `ccdr` aliases | `claude-code` feature |

@@ -8,6 +8,7 @@ rd_load_config
 REPO_ROOT="$(cd "${RD_DIR}/../.." && pwd)"
 : "${PROJECT_NAME:=$(basename "$REPO_ROOT")}"
 : "${SHARED_VOLUMES:=vscode minikube-config}"
+: "${VSCODE_SERVER_DIRNAME:=.vscode-server}"
 : "${CONTAINER_USER:=vscode}"
 : "${CONTAINER_UID_GID:=1000:1000}"
 : "${CLONE_IMAGE:=mcr.microsoft.com/devcontainers/base:noble}"
@@ -161,12 +162,16 @@ rdc_container_name() {
 }
 
 rdc_project_volumes() {
-  local id="$1" vol
-  rd_docker inspect "$id" --format '{{range .Mounts}}{{if eq .Type "volume"}}{{.Name}}{{"\n"}}{{end}}{{end}}' \
-    | while IFS= read -r vol; do
+  local id="$1" vol target
+  rd_docker inspect "$id" \
+    --format '{{range .Mounts}}{{if eq .Type "volume"}}{{.Name}} {{.Destination}}{{"\n"}}{{end}}{{end}}' \
+    | while read -r vol target; do
         [ -n "$vol" ] || continue
         case " ${SHARED_VOLUMES} " in
           *" ${vol} "*) continue ;;
+        esac
+        case "$target" in
+          */"${VSCODE_SERVER_DIRNAME}") continue ;;
         esac
         printf '%s\n' "$vol"
       done
@@ -481,7 +486,6 @@ CREDS
 }
 
 : "${VSCODE_CLI:=code}"
-: "${VSCODE_SERVER_DIRNAME:=.vscode-server}"
 
 rdc_vscode_commit() {
   rd_require_cmd "$VSCODE_CLI" "Install the VS Code 'code' command: Command Palette > Shell Command: Install 'code' command in PATH"
@@ -779,7 +783,7 @@ rdc_clean() {
   rd_log "removing image ${image}"
   rd_docker rmi "$image" > /dev/null
 
-  rd_ok "torn down, shared volumes (${SHARED_VOLUMES}) and the cached base image were kept"
+  rd_ok "torn down, shared volumes (${SHARED_VOLUMES}), the VS Code server cache and the cached base image were kept"
 }
 
 rdc_rebuild() {

@@ -74,8 +74,9 @@ EC2 reference, troubleshooting) live in
   target is a literal path there because no devcontainer variable resolves to
   the remote user's home and `${containerEnv:HOME}` is empty in this image;
   postCreate composes the same path from `/etc/passwd` instead, which is what
-  makes the mismatch detectable. `make clean` removes the volume with the
-  container's other volumes, so the next build fetches the server once more.
+  makes the mismatch detectable. `make clean` keeps it, identified by its mount
+  point rather than its name, so a teardown does not throw away a cache that
+  costs a fetch to rebuild.
 - `make reopen` seeds that volume before it opens the window, and `make
   vscode-server` does it on demand. The build to fetch is only knowable on the
   laptop, since VS Code updates itself between container builds, so postCreate

@@ -59,9 +59,14 @@ EC2 reference, troubleshooting) live in
   shell. postCreate rewrites that line with the zsh it resolved, because the
   committed file cannot know where zsh was installed.
 - `postAttachCommand` runs `resmon-disks.py`, which points the Resource Monitor
-  extension at the devices behind `/workspaces` and `/tmp`. resmon filters by
-  device rather than mount point and the device differs per host, so it is
-  resolved at run time. It runs on attach rather than in postCreate because VS
+  extension at the device behind `/workspaces`. resmon filters by device rather
+  than mount point and the device differs per host, so it is resolved at run
+  time. Only mount points backed by a real device are reportable: the extension
+  keeps the filesystems whose source string appears in `resmon.disk.drives`, and
+  `/tmp` is a tmpfs whose source `df` prints as `none`, which would show up as an
+  entry labelled `none` and match every tmpfs at once. `/tmp` is therefore out of
+  the default, and a mount point named in `RESMON_DISK_MOUNTS` that resolves to a
+  pseudo-filesystem now fails rather than writing that entry. It runs on attach rather than in postCreate because VS
   Code writes its settings file after postCreate, and it never creates that
   file: doing so stops VS Code seeding it and leaves the container with no
   profiles or editor settings at all.

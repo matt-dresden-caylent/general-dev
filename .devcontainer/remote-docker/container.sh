@@ -562,6 +562,7 @@ rdc_seed_vscode_server() {
 
   if rdc_exec_probe "$id" test -x "${dir}/${commit}/bin/code-server"; then
     rd_ok "server for build ${commit} is already in the volume, nothing to fetch"
+    rdc_prune_vscode_servers "$id" "$dir" "$commit"
     return 0
   fi
 
@@ -591,6 +592,24 @@ mv -n \"\$incoming\" '${dir}/${commit}'
     "  ${RD_BOLD}SKIP_VSCODE_SERVER_SEED=1 make reopen${RD_RESET}"
 
   rd_ok "server for build ${commit} seeded, VS Code will find it and transfer nothing"
+  rdc_prune_vscode_servers "$id" "$dir" "$commit"
+}
+
+rdc_prune_vscode_servers() {
+  local id="$1" dir="$2" keep="$3" build removed=0
+  while IFS= read -r build; do
+    [ -n "$build" ] || continue
+    [ "$build" != "$keep" ] || continue
+    if rdc_exec_probe "$id" pgrep -f "${dir}/${build}/" > /dev/null 2>&1; then
+      rd_log "keeping build ${build}, a process in the container is running it"
+      continue
+    fi
+    rdc_exec_probe "$id" rm -rf "${dir}/${build}" \
+      || rd_die "could not remove ${dir}/${build} from the container"
+    rd_log "removed build ${build}, nothing needs it"
+    removed=$(( removed + 1 ))
+  done < <(rdc_exec_probe "$id" sh -c "ls -1 '${dir}' 2> /dev/null || true")
+  [ "$removed" -eq 0 ] || rd_ok "pruned ${removed} unused server build(s) from the volume"
 }
 
 rdc_reopen() {

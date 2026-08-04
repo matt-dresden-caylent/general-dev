@@ -121,7 +121,11 @@ EC2 reference, troubleshooting) live in
   `product.json` before moving it into place, extracts beside the target so an
   interrupted fetch leaves no half-server where the extension probes, and does
   nothing when the build is already present. `SKIP_VSCODE_SERVER_SEED=1` opens
-  the window without it.
+  the window without it. It then prunes builds nothing needs: VS Code never
+  deletes the server it stops using, and each is around 635 MB, so one arrives
+  per VS Code update and none leave. A build a process in the container is
+  running is kept, since that is the server the current window is talking to, and
+  every removal is reported.
 - Git repo detection: `git.autoRepositoryDetection: "subFolders"` +
   `git.repositoryScanMaxDepth: -1` + `git.openRepositoryInParentFolders:
   "never"`, every nested repo under the workspace root is detected at any

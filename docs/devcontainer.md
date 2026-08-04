@@ -13,7 +13,12 @@ EC2 reference, troubleshooting) live in
   (no Dockerfile), user `vscode`, workspace at
   `/workspaces/${localWorkspaceFolderBasename}`.
 - Features: aws-cli, Python 3.14, Node 25, kubectl + helm (minikube disabled
-  via `"minikube": "none"`), common-utils, docker-in-docker.
+  via `"minikube": "none"`), common-utils, docker-in-docker, uv.
+- uv is a feature because `make lint` runs every linter through `uvx`, so without
+  it the target fails at the tool rather than on findings, and nothing else
+  installed it: not a feature, not `project-setup.sh`. The feature installs the
+  release tarball from `astral-sh/uv` directly, and both `uv` and `uvx` land in
+  `/usr/local/bin` for the container user.
 - `"shutdownAction": "none"`, the container is NOT stopped when the VS Code
   window closes or the connection drops. Applies in both modes; on the remote
   engine this is what makes sessions survive laptop shutdowns.

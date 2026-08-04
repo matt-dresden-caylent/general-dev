@@ -52,16 +52,17 @@ configure_shell_env() {
   [ -f "${SHELL_ENV}" ] || exit_with_error "shell.env not found at ${SHELL_ENV}"
   log_section "Shell environment" "sourcing shell.env from bash and zsh"
 
+  local path_prepend='case ":$PATH:" in *":$HOME/.local/bin:"*) ;; *) export PATH="$HOME/.local/bin:$PATH" ;; esac'
+
   {
-    echo "# Source project shell.env"
     echo "source \"${SHELL_ENV}\""
     echo "export BASH_ENV=\"${SHELL_ENV}\""
-    echo "export PATH=\"\$HOME/.local/bin:\$PATH\""
+    echo "${path_prepend}"
   } >> "${BASH_RC}"
 
   {
     echo "source \"${SHELL_ENV}\""
-    echo "export PATH=\"\$HOME/.local/bin:\$PATH\""
+    echo "${path_prepend}"
   } > "${ZSH_ENV}"
 
   log_section_done "Shell environment"

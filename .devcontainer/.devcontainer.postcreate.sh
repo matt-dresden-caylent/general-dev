@@ -39,9 +39,9 @@ PROJECT_SETUP="${WORK_DIR}/.devcontainer/project-setup.sh"
 AWS_PROFILE_MAP_FILE="${WORK_DIR}/.devcontainer/aws-profile-map.json"
 REPOS_PATH="${WORK_DIR}/${DEVCONTAINER_REPOS_DIR}"
 RESMON_DISKS="${WORK_DIR}/.devcontainer/resmon-disks.py"
+VSCODE_SETTINGS_SYNC="${WORK_DIR}/.devcontainer/vscode-settings-sync.py"
 
 USER_BIN="${USER_HOME}/.local/bin"
-RESMON_DISKS_HOOK="${USER_BIN}/$(basename "${RESMON_DISKS}")"
 
 VSCODE_SERVER_DIR="${USER_HOME}/${DEVCONTAINER_VSCODE_SERVER_DIRNAME}"
 VSCODE_SERVER_CACHE="${VSCODE_SERVER_DIR}/${DEVCONTAINER_VSCODE_SERVER_CACHE_SUBDIR}"
@@ -190,25 +190,46 @@ configure_vscode_server_dir() {
     "$(du -sh "${VSCODE_SERVER_CACHE}" | cut -f1) carried over, rebuilds reuse it"
 }
 
-configure_resmon_disks() {
-  [ -f "${RESMON_DISKS}" ] || exit_with_error \
-    "resmon script not found at ${RESMON_DISKS}, which postAttachCommand runs on every attach"
-
+container_user_python() {
   local python
   python="$(container_user_path_to python3)"
   [ -n "${python}" ] || exit_with_error \
-    "python3 not found, so postAttachCommand cannot run ${RESMON_DISKS_HOOK}. Add the python feature to devcontainer.json."
+    "python3 not found, so postAttachCommand cannot run its hooks. Add the python feature to devcontainer.json."
+  printf '%s\n' "${python}"
+}
 
-  log_section "Resource Monitor disks" "${RESMON_DISKS_HOOK} -> ${RESMON_DISKS}"
-
+install_attach_hook() {
+  local source="$1" hook
+  hook="${USER_BIN}/$(basename "$1")"
+  [ -f "${source}" ] || exit_with_error \
+    "hook script not found at ${source}, which postAttachCommand runs on every attach"
   install -d -m 755 "${USER_BIN}"
-  ln -sfn "${RESMON_DISKS}" "${RESMON_DISKS_HOOK}"
+  ln -sfn "${source}" "${hook}"
+  printf '%s\n' "${hook}"
+}
 
-  as_container_user "HOME='${USER_HOME}' '${python}' '${RESMON_DISKS_HOOK}'" \
-    || exit_with_error \
-      "${RESMON_DISKS_HOOK} does not run, so postAttachCommand would fail on every attach"
+run_attach_hook() {
+  local python="$1" hook="$2"
+  as_container_user "HOME='${USER_HOME}' '${python}' '${hook}'" \
+    || exit_with_error "${hook} does not run, so postAttachCommand would fail on every attach"
+}
 
+configure_resmon_disks() {
+  local python hook
+  python="$(container_user_python)"
+  hook="$(install_attach_hook "${RESMON_DISKS}")"
+  log_section "Resource Monitor disks" "${hook} -> ${RESMON_DISKS}"
+  run_attach_hook "${python}" "${hook}"
   log_section_done "Resource Monitor disks"
+}
+
+configure_vscode_settings_sync() {
+  local python hook
+  python="$(container_user_python)"
+  hook="$(install_attach_hook "${VSCODE_SETTINGS_SYNC}")"
+  log_section "VS Code settings sync" "${hook} -> ${VSCODE_SETTINGS_SYNC}"
+  run_attach_hook "${python}" "${hook}"
+  log_section_done "VS Code settings sync"
 }
 
 configure_oh_my_zsh() {
@@ -402,6 +423,7 @@ main() {
   configure_claude_aliases
   configure_tmux_commands
   configure_resmon_disks
+  configure_vscode_settings_sync
   configure_oh_my_zsh
   configure_aws_profiles
   validate_proxy

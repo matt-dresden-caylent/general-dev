@@ -90,6 +90,18 @@ EC2 reference, troubleshooting) live in
   makes the mismatch detectable. `make clean` keeps it, identified by its mount
   point rather than its name, so a teardown does not throw away a cache that
   costs a fetch to rebuild.
+- `postAttachCommand` also runs `vscode-settings-sync.py`, ahead of the resmon
+  hook and sequentially so the two never write the settings file at once. VS Code
+  writes `data/Machine/settings.json` from `customizations.vscode.settings` only
+  when that file is absent, so before this an edit to `devcontainer.json` reached
+  a container only by creating one. The hook merges the settings that file
+  declares into the existing copy on every attach: keys VS Code or a feature put
+  there are left alone, and a key removed from `devcontainer.json` is not
+  removed from the container, which still needs a rebuild. It never creates the
+  file, for the same reason the resmon hook does not. It locates the config by
+  the one `\*/.devcontainer/devcontainer.json` under `/workspaces`, since an
+  attached container gives a hook no workspace path, and fails when that is not
+  exactly one file; `DEVCONTAINER_CONFIG` names it directly.
 - Only `bin/` is on that volume, deliberately. VS Code seeds
   `data/Machine/settings.json` from `customizations.vscode.settings` only when
   that file does not exist, so a volume over the whole of `~/.vscode-server`
@@ -157,6 +169,7 @@ EC2 reference, troubleshooting) live in
    | `ccd` / `ccdr` aliases | `claude-code` feature |
    | `tm-*` commands sourced into both shells | `tmux` |
    | `resmon-disks.py` linked into `~/.local/bin` for postAttach | `python3`, required |
+   | `vscode-settings-sync.py` linked into `~/.local/bin` for postAttach | `python3`, required |
    | Oh My Zsh theme and options | `common-utils` `installOhMyZsh` |
    | `~/.aws/config` from `aws-profile-map.json` | `jq` + a non-empty map |
    | host proxy reachability | `HOST_PROXY=true` |

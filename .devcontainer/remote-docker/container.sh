@@ -726,7 +726,14 @@ rdc_build_remote() {
   trap 'rm -f "$RDC_OVERRIDE_CONFIG"' EXIT
   rdc_read_configuration \
     | jq --arg mount "source=${volume},target=${CONTAINER_WORKSPACES_ROOT},type=volume" \
-      '.configuration | del(.configFilePath) | .workspaceMount = $mount' > "$RDC_OVERRIDE_CONFIG" \
+      --arg configdir "${REPO_ROOT}/.devcontainer" \
+      '.configuration
+       | del(.configFilePath)
+       | .workspaceMount = $mount
+       | if .build.dockerfile then
+           .build.dockerfile = "\($configdir)/\(.build.dockerfile)"
+           | .build.context = (if .build.context then "\($configdir)/\(.build.context)" else $configdir end)
+         else . end' > "$RDC_OVERRIDE_CONFIG" \
     || rd_fail "The override configuration could not be generated" \
       "The resolved config was read, but rewriting workspaceMount to point at volume" \
       "'${volume}' failed, so there is nothing to build from." \

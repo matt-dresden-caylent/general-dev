@@ -8,6 +8,7 @@ TUNNEL_SH := $(RD_DIR)/docker-tunnel.sh
 SHELL_SH := $(RD_DIR)/shell.sh
 SECRETS_SH := $(RD_DIR)/push-secrets.sh
 PROXY_SH := .devcontainer/tinyproxy-daemon.sh
+KEYBINDINGS_PY := .devcontainer/vscode-keybindings-install.py
 
 PROXY_ENV = set -a; . $(CONFIG); set +a;
 
@@ -26,7 +27,8 @@ PRIVATE_FILES ?= shell.env devcontainer-environment-variables.json .devcontainer
 .DEFAULT_GOAL := help
 .PHONY: help connect disconnect status shell start stop restart rename check build push-git-creds clean rebuild push-secrets \
         lint lint-md lint-sh lint-dispatch lint-json lint-private lint-nested format hooks-install hooks-uninstall hooks-run \
-        proxy-start proxy-stop proxy-restart proxy-status build-no-cache rebuild-no-cache local remote reopen init up vscode-server
+        proxy-start proxy-stop proxy-restart proxy-status build-no-cache rebuild-no-cache local remote reopen init up vscode-server \
+        keybindings
 
 help:
 	@printf '\n\033[1mgeneral-dev\033[0m devcontainer control. Project: \033[1m%s\033[0m   Backend follows the active docker context.\n' "$(notdir $(CURDIR))"
@@ -35,6 +37,7 @@ help:
 	@printf '  \033[1;36m%-30s\033[0m %s\n' "make up"               "Get working from any state: refreshes the tunnel, builds or starts as needed, then opens VS Code."
 	@printf '\n\033[1mFIRST RUN\033[0m\n'
 	@printf '  \033[1;36m%-30s\033[0m %s\n' "make init"             "Create the three gitignored config files from their examples. Never overwrites an existing one."
+	@printf '  \033[1;36m%-30s\033[0m %s\n' "make keybindings"      "Once per machine: bind Shift+Enter to a newline in VS Code terminals. Must run on the host, not in the container."
 	@printf '\n\033[1mENDPOINT\033[0m  which docker engine everything targets\n'
 	@printf '  \033[1;36m%-30s\033[0m %s\n' "make local"            "Point docker and VS Code at the local engine ($(LOCAL_CONTEXT)). Nothing remote is stopped."
 	@printf '  \033[1;36m%-30s\033[0m %s\n' "make remote"           "Point them at the EC2 engine ($(REMOTE_CONTEXT)), refreshing the SSH-over-SSM tunnel first."
@@ -146,6 +149,9 @@ init:
 		printf '\n\033[0;36m[NEXT]\033[0m replace the placeholders above, then: make local (or make remote), then make build\n'; \
 		printf '        What each value does: docs/environment-files.md\n'; \
 	fi
+
+keybindings:
+	@python3 $(KEYBINDINGS_PY)
 
 up:
 	@$(CONTAINER_SH) up

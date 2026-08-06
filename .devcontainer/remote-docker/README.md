@@ -389,8 +389,10 @@ What `build` does:
    engine, using the cached base image, then hands the tree to the container's
    uid.
 2. Generates an override config, the resolved `devcontainer.json` with
-   `workspaceMount` pointed at that volume. The committed file is untouched, so
-   local builds still bind-mount normally.
+   `workspaceMount` pointed at that volume and `build.dockerfile` and
+   `build.context` rewritten absolute, since the override lives in a temp file
+   and the CLI resolves relative paths against it. The committed file is
+   untouched, so local builds still bind-mount normally.
 3. Runs `devcontainer up` against it.
 
 It refuses to start, before touching anything, when:

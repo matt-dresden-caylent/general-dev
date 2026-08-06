@@ -14,6 +14,17 @@ EC2 reference, troubleshooting) live in
   `/workspaces/${localWorkspaceFolderBasename}`.
 - Features: aws-cli, Python 3.14, Node 25, kubectl + helm (minikube disabled
   via `"minikube": "none"`), common-utils, docker-in-docker, uv.
+- Features contribute VS Code extensions of their own, merged with the
+  `customizations.vscode.extensions` list: the container image's
+  `devcontainer.metadata` label records which feature added which. The aws-cli
+  feature contributes `AmazonWebServices.aws-toolkit-vscode`, which nothing here
+  uses: nobody signs into it, so its explorer sat on a Sign in button, and it
+  shows a telemetry notice on first activation regardless of the `aws.telemetry`
+  setting, on every rebuild anew because the acknowledgement lives in `data/`,
+  which is deliberately not persisted. The `-`-prefixed entry in the extensions
+  list is the spec's opt-out and keeps the feature (the CLI is used) while
+  dropping its extension. `aws.telemetry: false` stays in the settings so a
+  manual install of the toolkit still collects nothing.
 - `devcontainer-lock.json` is not tracked. The CLI writes it when it resolves a
   feature it has no entry for, so a tracked copy left `.devcontainer` dirty after
   the first build with a new feature, and the build guard then refused the next

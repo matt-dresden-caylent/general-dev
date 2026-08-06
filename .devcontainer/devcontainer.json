@@ -71,6 +71,7 @@
   "customizations": {
     "vscode": {
       "extensions": [
+        "-AmazonWebServices.aws-toolkit-vscode",
         "aws-scripting-guy.cform",
         "ms-python.debugpy",
         "charliermarsh.ruff",

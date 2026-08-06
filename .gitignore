@@ -45,3 +45,6 @@
 # Environment files
 shell.env
 devcontainer-environment-variables.json
+
+# Python bytecode
+__pycache__/

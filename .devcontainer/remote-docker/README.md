@@ -360,7 +360,8 @@ make clean
 ```
 
 It reads the container's own mounts before removing it, so the volumes it
-deletes are the ones actually attached, not guessed from a naming convention, then removes the container, those volumes, and the image. `minikube-config` is
+deletes are the ones actually attached, not guessed from a naming convention, then removes the container, those volumes, and the image. `minikube-config` and
+`vscode` — the Dev Containers extension's engine-wide server cache — are
 excluded as shared (`SHARED_VOLUMES` overrides the list), the VS Code server
 volume is excluded by its mount point, and `devcontainer-base:noble` and
 `vsc-volume-bootstrap` stay cached: they hold no project state and make the

@@ -56,7 +56,12 @@ EC2 reference, troubleshooting) live in
   on, so containers created by `make build` and by VS Code's Clone Repository
   in Container Volume are discovered identically. `${devcontainerId}` is unique
   per instance, so several clones of one repo coexist; the generated name is
-  long, and `make rename` replaces it with something readable.
+  long, and `make rename` replaces it with something readable. Local `make
+  build` also passes `devcontainer.local_folder` and `devcontainer.config_file`
+  as id-labels: any `--id-label` replaces the CLI's defaults, and those two are
+  how VS Code recognises a folder's container, so without them `make reopen`
+  had VS Code build a second, identically-configured container rather than
+  attach to the one just built.
 - Terminals default to a `tmux` profile that attaches to a shared session
   (`terminal.integrated.profiles.linux`). VS Code terminates terminal processes
   when the window closes, so this is what keeps a Claude session or long build
@@ -197,7 +202,13 @@ EC2 reference, troubleshooting) live in
   252s for VS Code's own transfer. It verifies the `commit` in the delivered
   `product.json` before moving it into place, extracts beside the target so an
   interrupted fetch leaves no half-server where the extension probes, and does
-  nothing when the build is already present. `SKIP_VSCODE_SERVER_SEED=1` opens
+  nothing when the build is already present. An entry that is present but not a
+  usable server is removed first, unless a process is running from it: a VS Code
+  window attached to a local container it created itself mounts the host's
+  server cache at `/vscode` and writes a symlink to it into the volume, which
+  dangles in every container built without that mount — invisible to `test -e`,
+  which follows links, yet enough to make the final `mv` refuse and fail the
+  seed on every attach. `SKIP_VSCODE_SERVER_SEED=1` opens
   the window without it. It then prunes builds nothing needs: VS Code never
   deletes the server it stops using, and each is around 635 MB, so one arrives
   per VS Code update and none leave. A build a process in the container is

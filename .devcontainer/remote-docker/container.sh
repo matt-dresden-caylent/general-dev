@@ -7,7 +7,10 @@ rd_load_config
 
 REPO_ROOT="$(cd "${RD_DIR}/../.." && pwd)"
 : "${PROJECT_NAME:=$(basename "$REPO_ROOT")}"
-: "${SHARED_VOLUMES:=minikube-config}"
+# 'vscode' is the Dev Containers extension's engine-wide server cache, mounted
+# at /vscode into containers the extension creates itself; it belongs to every
+# project on the engine, not this one.
+: "${SHARED_VOLUMES:=minikube-config vscode}"
 : "${VSCODE_SERVER_DIRNAME:=.vscode-server}"
 : "${VSCODE_SERVER_CACHE_SUBDIR:=bin}"
 : "${CONTAINER_USER:=vscode}"
@@ -567,6 +570,24 @@ rdc_seed_vscode_server() {
     return 0
   fi
 
+  # test -e follows symlinks, so a dangling one answers to neither check above
+  # yet still makes mv refuse the seeded server. A VS Code window leaves exactly
+  # that: attached to a container it created itself, it mounts the host's server
+  # cache at /vscode and writes a symlink to it into the volume, which dangles
+  # in every container built without that mount.
+  if rdc_exec_probe "$id" sh -c "[ -e '${dir}/${commit}' ] || [ -L '${dir}/${commit}' ]"; then
+    if rdc_exec_probe "$id" pgrep -f "${dir}/${commit}/" > /dev/null 2>&1; then
+      rd_fail "${dir}/${commit} is not a usable server, but a process in the container is running from it" \
+        "It cannot be replaced while something uses it." \
+        "" \
+        "To open the window and let VS Code transfer the server itself:" \
+        "  ${RD_BOLD}SKIP_VSCODE_SERVER_SEED=1 make reopen${RD_RESET}"
+    fi
+    rd_log "removing ${dir}/${commit}, it is present but not a usable server"
+    rdc_exec_probe "$id" rm -rf "${dir}/${commit}" \
+      || rd_die "could not remove the unusable ${dir}/${commit} from the container"
+  fi
+
   local platform url
   platform="$(rdc_vscode_server_platform "$id")"
   url="${VSCODE_UPDATE_URL}/commit:${commit}/${platform}/${VSCODE_UPDATE_CHANNEL}"
@@ -706,9 +727,15 @@ rdc_build_local() {
   local flags=()
   while IFS= read -r flag; do [ -z "$flag" ] || flags+=("$flag"); done < <(rdc_build_flags)
 
+  # Passing any --id-label replaces the CLI's defaults, and VS Code identifies
+  # a folder's container by devcontainer.local_folder/config_file. Without
+  # them, opening the folder builds a second, identically-configured container
+  # instead of attaching to this one.
   rd_devcontainer_up "$DEVCONTAINER_CLI" \
     --workspace-folder "$REPO_ROOT" \
     --id-label "devcontainer.project=${PROJECT_NAME}" \
+    --id-label "devcontainer.local_folder=${REPO_ROOT}" \
+    --id-label "devcontainer.config_file=${REPO_ROOT}/.devcontainer/devcontainer.json" \
     ${flags[@]+"${flags[@]}"}
 }
 

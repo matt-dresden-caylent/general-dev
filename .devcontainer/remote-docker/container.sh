@@ -361,6 +361,7 @@ rdc_build_prereqs() {
 
 rdc_ensure_secrets_current() {
   [ "${SKIP_SECRETS_CHECK:-0}" != "1" ] || { rd_log "SKIP_SECRETS_CHECK=1, leaving Parameter Store untouched"; return 0; }
+  rd_require_remote_config
   rd_require_cmd aws "Install: https://docs.aws.amazon.com/cli/latest/userguide/getting-started-install.html"
 
   local local_env published
@@ -822,12 +823,20 @@ rdc_clean() {
 
 rdc_rebuild() {
   rdc_build_prereqs
-  rdc_ensure_secrets_current
+  if [ "$(rdc_backend)" = "remote" ]; then
+    rdc_ensure_secrets_current
+  fi
   rdc_clean
   rdc_build
 }
 
 RDC_COMMAND="${1:-}"
+
+# Anything aimed at the remote engine needs the EC2 identity before docker is
+# even reachable; local commands must not, so this cannot live in rd_load_config.
+if command -v docker > /dev/null 2>&1 && [ "$(rdc_backend)" = "remote" ]; then
+  rd_require_remote_config
+fi
 
 case "$RDC_COMMAND" in
   status) rdc_status ;;

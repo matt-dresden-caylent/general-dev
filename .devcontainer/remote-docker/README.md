@@ -45,7 +45,11 @@ brew install jq            # and python3, used to compare timestamps
 ```
 
 Every target checks its own prerequisites and fails with the install command
-for whatever is missing.
+for whatever is missing. All of the above applies to the remote engine only:
+on a machine that only ever targets a local engine, none of the `REMOTE_*`
+configuration needs to exist, and only the remote targets (`connect`, `shell`,
+`push-secrets`) and commands run while the remote context is active validate
+it.
 
 ## Scripts
 

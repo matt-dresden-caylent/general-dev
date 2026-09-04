@@ -43,6 +43,11 @@ REPOS_PATH="${WORK_DIR}/${DEVCONTAINER_REPOS_DIR}"
 RESMON_DISKS="${WORK_DIR}/.devcontainer/resmon-disks.py"
 VSCODE_SETTINGS_SYNC="${WORK_DIR}/.devcontainer/vscode-settings-sync.py"
 
+# Where devcontainer_config lives (Makefile:15 holds the same value for
+# 'make hooks-install' and friends). Named once here so configure_shell_env
+# does not hardcode this path inline.
+DEVCONTAINER_SCRIPTS_DIR="${WORK_DIR}/.claude/plugins/devcontainer/scripts"
+
 USER_BIN="${USER_HOME}/.local/bin"
 
 VSCODE_SERVER_DIR="${USER_HOME}/${DEVCONTAINER_VSCODE_SERVER_DIRNAME}"
@@ -51,6 +56,16 @@ WARNINGS=()
 is_cicd() { [ "${CICD,,}" = "true" ]; }
 
 export PATH="${DEVCONTAINER_EXTRA_PATH}:${USER_BIN}:${PATH}"
+
+# The devsecret export-list startup block for one shell (spec Section 11),
+# rendered by devcontainer_config.shellrc rather than hand-written here
+# (spec Section 3.5: all new logic is Python, no new shell script). Reused
+# for both shells configure_shell_env wires below so the render invocation
+# exists in exactly one place.
+render_devsecret_shell_block() {
+  local shell="$1"
+  PYTHONPATH="${DEVCONTAINER_SCRIPTS_DIR}" python3 -m devcontainer_config.shellrc "${shell}"
+}
 
 configure_shell_env() {
   [ -f "${SHELL_ENV}" ] || exit_with_error "shell.env not found at ${SHELL_ENV}"
@@ -68,6 +83,32 @@ configure_shell_env() {
     echo "source \"${SHELL_ENV}\""
     echo "${path_prepend}"
   } > "${ZSH_ENV}"
+
+  # A container whose shells silently lack their exported secrets is worse
+  # than a container that failed to create, so a non-zero render is fatal
+  # through exit_with_error rather than warned about or skipped.
+  local bash_block zsh_block
+  bash_block="$(render_devsecret_shell_block bash)" || exit_with_error "$(printf '%s\n' \
+    "devcontainer_config.shellrc failed to render the bash devsecret export-list block." \
+    "Rerun 'PYTHONPATH=${DEVCONTAINER_SCRIPTS_DIR} python3 -m devcontainer_config.shellrc bash'" \
+    "from ${WORK_DIR} to see the underlying error.")"
+  zsh_block="$(render_devsecret_shell_block zsh)" || exit_with_error "$(printf '%s\n' \
+    "devcontainer_config.shellrc failed to render the zsh devsecret export-list block." \
+    "Rerun 'PYTHONPATH=${DEVCONTAINER_SCRIPTS_DIR} python3 -m devcontainer_config.shellrc zsh'" \
+    "from ${WORK_DIR} to see the underlying error.")"
+
+  # Idempotent: a rebuild or a manual rerun of this function must not
+  # duplicate the block (AC-FUNC-006). Each rendered block's own first line
+  # is its marker (devcontainer_config.shellrc.MARKER); grepping the target
+  # startup file for that line before appending, the same
+  # 'grep -q ... || <action>' guard style already used elsewhere in this
+  # file, is what makes a second run a no-op instead of a second copy.
+  local bash_marker zsh_marker
+  bash_marker="$(printf '%s\n' "${bash_block}" | head -n 1)"
+  zsh_marker="$(printf '%s\n' "${zsh_block}" | head -n 1)"
+
+  grep -qF -- "${bash_marker}" "${BASH_RC}" || printf '%s\n' "${bash_block}" >> "${BASH_RC}"
+  grep -qF -- "${zsh_marker}" "${ZSH_ENV}" || printf '%s\n' "${zsh_block}" >> "${ZSH_ENV}"
 
   log_section_done "Shell environment"
 }
@@ -447,9 +488,39 @@ configure_git() {
     return 0
   fi
   log_section "Git configuration" "identity and credential helper"
+  # Named, not left to `set -u`. Each of these comes from shell.env, and an
+  # incomplete one is an ordinary operator mistake; without these guards the
+  # script dies with "GIT_USER: unbound variable" and a line number, which
+  # names neither the variable's source nor the fix. Checked here rather than
+  # in main() so a CICD run, or a container with no git, is not required to
+  # set variables it never uses.
+  local name
+  for name in GIT_USER GIT_USER_EMAIL GIT_PROVIDER_URL; do
+    [ -n "${!name:-}" ] || exit_with_error "$(printf '%s\n' \
+      "${name} is not set in the environment." \
+      "It comes from shell.env; add it there, or to this instance's shell.env in" \
+      "Parameter Store, then rebuild.")"
+  done
   configure_git_shared "${CONTAINER_USER}" "${GIT_USER}" "${GIT_USER_EMAIL}"
   configure_git_credential_helper "${CONTAINER_USER}" "${GIT_PROVIDER_URL}"
   log_section_done "Git configuration"
+}
+
+install_git_hooks() {
+  [ -d "${WORK_DIR}/.git" ] || exit_with_error "$(printf '%s\n' \
+    "no .git directory at ${WORK_DIR}, so hooks cannot be installed." \
+    "confirm the workspace was cloned into place before postCreate runs, then retry.")"
+
+  log_section "Git hooks" "pre-commit and pre-push, via 'make hooks-install'"
+  (cd "${WORK_DIR}" && make hooks-install) || exit_with_error "$(printf '%s\n' \
+    "'make hooks-install' failed in ${WORK_DIR}." \
+    "rerun 'make hooks-install' from ${WORK_DIR} once the failure above is resolved.")"
+  # This script runs as root (postcreate-wrapper.sh's 'sudo -E ... bash'), so the
+  # hooks 'make hooks-install' just wrote land root-owned inside a workspace that
+  # belongs to CONTAINER_USER. Every other root-side workspace writer in this file
+  # restores ownership the same way (declare_unclaimed_path, configure_repo_detection).
+  chown -R "${CONTAINER_USER}:${CONTAINER_USER}" "${WORK_DIR}/.git/hooks"
+  log_section_done "Git hooks"
 }
 
 declare_unclaimed_path() {
@@ -557,6 +628,7 @@ main() {
   configure_aws_profiles
   validate_proxy
   configure_git
+  install_git_hooks
   configure_repo_detection
   fix_ownership
   report_warnings

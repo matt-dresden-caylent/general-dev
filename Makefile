@@ -3,12 +3,22 @@ SHELL := /bin/bash
 
 RD_DIR := .devcontainer/remote-docker
 CONFIG := $(RD_DIR)/config.env
+# The instance every remote target acts on. Declared once, passed through to
+# each remote recipe rather than resolved at parse time: resolution shells out,
+# and doing it at parse time would run on every `make` invocation including
+# `make help`, in a repository that may have no instances configured at all.
+# Empty by default, so the resolver applies its own four-step order.
+INSTANCE ?=
+
 CONTAINER_SH := $(RD_DIR)/container.sh
-TUNNEL_SH := $(RD_DIR)/docker-tunnel.sh
-SHELL_SH := $(RD_DIR)/shell.sh
 SECRETS_SH := $(RD_DIR)/push-secrets.sh
+CERTS_SH := $(RD_DIR)/certs.sh
 PROXY_SH := .devcontainer/tinyproxy-daemon.sh
 KEYBINDINGS_PY := .devcontainer/vscode-keybindings-install.py
+# Where devcontainer_config lives (spec Section 4.5). Named once here so no
+# target hardcodes this path inline; PYTHONPATH is set to it, not the
+# repository root, because the package is not importable from there.
+DEVCONTAINER_SCRIPTS_DIR := .claude/plugins/devcontainer/scripts
 
 PROXY_ENV = set -a; . $(CONFIG); set +a;
 
@@ -19,6 +29,14 @@ UVX ?= uvx
 MARKDOWN_LINT ?= $(UVX) pymarkdownlnt --config .pymarkdown.json
 SPELL_LINT ?= $(UVX) codespell --builtin clear,rare,en-GB_to_en-US
 SHELL_LINT ?= $(UVX) --from shellcheck-py shellcheck
+PYTEST ?= uv run --group dev pytest
+# E3-F2-S2-T5 AC-DOC-001 / AC-FUNC-001: the `test` target's host prerequisite
+# tools and each one's install command, defined once so the PREREQUISITES
+# help row and the `test:` recipe's fail-fast guard read the same value and
+# can never document or print different remediation for the same tool.
+TEST_PREREQUISITE_TOOLS := uv zsh
+TEST_INSTALL_HINT_uv := brew install uv
+TEST_INSTALL_HINT_zsh := brew install zsh (macOS) or sudo apt-get install -y zsh (Linux, WSL)
 # repos/ holds clones of other repositories. Their contents are not this
 # repo's to lint, and an unparseable file in one of them failed the build here.
 LINT_EXCLUDES ?= -not -path './.git/*' -not -path './devbench/*' -not -path './node_modules/*' -not -path './repos/*'
@@ -31,13 +49,13 @@ SPELL_FILES ?= $(MD_FILES)
 PRIVATE_FILES ?= shell.env devcontainer-environment-variables.json .devcontainer/aws-profile-map.json
 
 .DEFAULT_GOAL := help
-.PHONY: help connect disconnect status shell start stop restart rename check build push-git-creds clean rebuild push-secrets \
-        lint lint-md lint-sh lint-dispatch lint-json lint-private lint-nested lint-spell spell-fix format hooks-install hooks-uninstall hooks-run \
+.PHONY: help connect disconnect status exec shell instances start stop restart rename check build push-git-creds clean rebuild push-secrets \
+        lint lint-md lint-sh lint-dispatch lint-json lint-private lint-nested lint-secrets lint-spell spell-fix format hooks-install hooks-uninstall hooks-run hooks-run-push \
         proxy-start proxy-stop proxy-restart proxy-status build-no-cache rebuild-no-cache local remote reopen init up vscode-server \
-        keybindings validate
+        keybindings validate test cert-status
 
 help:
-	@printf '\n\033[1mgeneral-dev\033[0m devcontainer control. Project: \033[1m%s\033[0m   Backend follows the active docker context.\n' "$(notdir $(CURDIR))"
+	@printf '\n\033[1m%s\033[0m devcontainer control.   Backend follows the active docker context.\n' "$(notdir $(CURDIR))"
 	@printf 'Local engine builds bind-mount this folder. The remote engine clones the repo into a volume on EC2.\n'
 	@printf 'Second column: \033[1mboth\033[0m = works on either engine via the active context, \033[1mlocal\033[0m/\033[1mremote\033[0m = that engine only,\n'
 	@printf '\033[1mhost\033[0m = runs on this machine and touches no engine at all.\n'
@@ -48,10 +66,10 @@ help:
 	@printf '  \033[1;36m%-23s\033[0m %-7s %s\n' "make keybindings"      "host"   "Bind Shift+Enter to a newline in VS Code terminals. Must run on the host, not in the container."
 	@printf '\n\033[1mENGINE\033[0m  pick where builds and containers live\n'
 	@printf '  \033[1;36m%-23s\033[0m %-7s %s\n' "make local"            "host"   "Point docker and VS Code at the local engine ($(LOCAL_CONTEXT)). Nothing remote is stopped."
-	@printf '  \033[1;36m%-23s\033[0m %-7s %s\n' "make remote"           "host"   "Point them at the EC2 engine ($(REMOTE_CONTEXT)), refreshing the SSH-over-SSM tunnel first."
+	@printf '  \033[1;36m%-23s\033[0m %-7s %s\n' "make remote"           "host"   "Point them at the EC2 engine ($(REMOTE_CONTEXT)), refreshing the SSM port forward first."
+	@printf '  \033[1;36m%-23s\033[0m %-7s %s\n' "make instances"        "host" "List every configured instance and mark the active one."
 	@printf '  \033[1;36m%-23s\033[0m %-7s %s\n' "make connect"          "remote" "What 'make remote' calls. Re-run after a reboot, after sleep, or when SSO expires."
 	@printf '  \033[1;36m%-23s\033[0m %-7s %s\n' "make disconnect"       "host"   "What 'make local' calls. Only changes where new commands and windows point."
-	@printf '  \033[1;36m%-23s\033[0m %-7s %s\n' "make shell"            "remote" "Interactive zsh on the EC2 host itself, not in a container."
 	@printf '\n\033[1mBUILD\033[0m  every target blocks until the container is up and exits non-zero if anything fails\n'
 	@printf '  \033[1;36m%-23s\033[0m %-7s %s\n' "make build"            "both"   "Create the container for the active backend. Refuses if one already exists."
 	@printf '  \033[1;36m%-23s\033[0m %-7s %s\n' "make rebuild"          "both"   "clean, then build. Prerequisites are checked before anything is destroyed."
@@ -61,27 +79,36 @@ help:
 	@printf '\n\033[1mLIFECYCLE\033[0m\n'
 	@printf '  \033[1;36m%-23s\033[0m %-7s %s\n' "make status"           "both"   "Backend, container, image and volumes. Read-only, so start here when something looks wrong."
 	@printf '  \033[1;36m%-23s\033[0m %-7s %s\n' "make reopen"           "both"   "Open the container in VS Code. Local opens the folder; remote names the container to attach to."
+	@printf '  \033[1;36m%-23s\033[0m %-7s %s\n' "make exec"             "both" "Interactive shell inside the container. CONTAINER_SHELL picks which one."
 	@printf '  \033[1;36m%-23s\033[0m %-7s %s\n' "make vscode-server"    "both"   "Fetch the VS Code server this machine needs inside the container. reopen does it for you."
 	@printf '  \033[1;36m%-23s\033[0m %-7s %s\n' "make start / stop"     "both"   "Start or stop the container. The checkout survives either way."
 	@printf '  \033[1;36m%-23s\033[0m %-7s %s\n' "make restart"          "both"   "Restart in place. Fixes a wedged container without rebuilding anything."
 	@printf '  \033[1;36m%-23s\033[0m %-7s %s\n' "make rename NAME=x"    "both"   "Give the container a readable name. New ones are <repo>-<devcontainerId>, which is too long to pick from a list."
 	@printf '  \033[1;36m%-23s\033[0m %-7s %s\n' "make check"            "both"   "Remote: report uncommitted or unpushed work in the volume, non-zero when dirty. Local: a no-op, the container shares this folder."
-	@printf '\n\033[1mSECRETS AND CREDENTIALS\033[0m\n'
+	@printf '\n\033[1mSECRETS AND CERTIFICATES\033[0m\n'
 	@printf '  \033[1;36m%-23s\033[0m %-7s %s\n' "make push-secrets"     "remote" "Publish shell.env and aws-profile-map.json to Parameter Store. Remote builds do this when needed."
 	@printf '  \033[1;36m%-23s\033[0m %-7s %s\n' "make push-git-creds"   "both"   "Copy this machine's git credentials into the container so it can push with no editor attached."
+	@printf '  \033[1;36m%-23s\033[0m %-7s %s\n' "make cert-status"      "host"   "Client and CA expiry per instance."
+	@printf '  \033[1;36m%-23s\033[0m %-7s %s\n' "make cert-ca"          "host"   "Create this instance's certificate authority. Once per instance; refuses if one exists."
+	@printf '  \033[1;36m%-23s\033[0m %-7s %s\n' "make cert-client"      "host"   "Issue the client certificate 'make connect' presents. Run after cert-ca, and again at renewal."
+	@printf '  \033[1;36m%-23s\033[0m %-7s %s\n' "make cert-publish"     "remote" "Issue server material and publish it to Parameter Store. The daemon needs it to open its listener."
+	@printf '  \033[1;36m%-23s\033[0m %-7s %s\n' "make cert-install"     "remote" "Have the instance fetch the published material and start its daemon. Run after cert-publish."
 	@printf '\n\033[1mHOST PROXY\033[0m  only needed behind a corporate proxy; remote builds force HOST_PROXY=false\n'
 	@printf '  \033[1;36m%-23s\033[0m %-7s %s\n' "make proxy-start"      "local"  "Run tinyproxy on this machine. Local containers reach it via host.docker.internal."
 	@printf '  \033[1;36m%-23s\033[0m %-7s %s\n' "make proxy-status"     "local"  "Whether it is running, and on which port."
 	@printf '  \033[1;36m%-23s\033[0m %-7s %s\n' "make proxy-restart"    "local"  "Stop then start, picking up changed settings."
 	@printf '  \033[1;36m%-23s\033[0m %-7s %s\n' "make proxy-stop"       "local"  "Stop it. Settings come from $(CONFIG); set HOST_PROXY=true in shell.env to make the container use it."
 	@printf '\n\033[1mQUALITY\033[0m\n'
-	@printf '  \033[1;36m%-23s\033[0m %-7s %s\n' "make lint"             "host"   "Private files untracked, no nested repos, JSON parses, shellcheck, markdown, US English. Non-zero on any finding."
+	@printf '  \033[1;36m%-23s\033[0m %-7s %s\n' "make lint"             "host"   "Private files untracked, no nested repos, JSON parses, shellcheck, markdown, US English, staged secrets. Non-zero on any finding."
+	@printf '  \033[1;36m%-23s\033[0m %-7s %s\n' "make lint-secrets"     "host"   "Scan staged content for secrets, or RANGE=<a>..<b> for a commit range. Exit 1 on any finding; there is no ignore list."
 	@printf '  \033[1;36m%-23s\033[0m %-7s %s\n' "make format"           "host"   "Auto-fix what the markdown tooling can fix, then report what is left."
 	@printf '  \033[1;36m%-23s\033[0m %-7s %s\n' "make lint-spell"       "host"   "US English spelling over this repo's markdown. SPELL_FILES overrides the set."
 	@printf '  \033[1;36m%-23s\033[0m %-7s %s\n' "make spell-fix"        "host"   "Auto-fix spelling, British-to-American included, in the same set. Rewrites the files."
-	@printf '  \033[1;36m%-23s\033[0m %-7s %s\n' "make hooks-install"    "host"   "Install pre-commit and pre-push hooks. Each is one line, 'exec make hooks-run', so they cannot drift."
-	@printf '  \033[1;36m%-23s\033[0m %-7s %s\n' "make hooks-run"        "host"   "Exactly what the hooks run. Use it to reproduce a hook failure."
-	@printf '  \033[1;36m%-23s\033[0m %-7s %s\n' "make validate"         "host"   "The green-baseline contract automation depends on. Currently lint; gains test as suites land."
+	@printf '  \033[1;36m%-23s\033[0m %-7s %s\n' "make hooks-install"    "host"   "Install pre-commit and pre-push hooks via devcontainer_config.githooks. Refuses to clobber a hook it did not write."
+	@printf '  \033[1;36m%-23s\033[0m %-7s %s\n' "make hooks-run"        "host"   "Exactly what pre-commit runs. Use it to reproduce a pre-commit failure."
+	@printf '  \033[1;36m%-23s\033[0m %-7s %s\n' "make hooks-run-push"   "host"   "Exactly what pre-push runs: lint, then a secrets scan of every commit in the pushed range."
+	@printf '  \033[1;36m%-23s\033[0m %-7s %s\n' "make test"             "host"   "Run the hermetic pytest suite in tests/. No docker, no AWS, no network."
+	@printf '  \033[1;36m%-23s\033[0m %-7s %s\n' "make validate"         "host"   "The green-baseline contract automation depends on. Runs lint then test."
 	@printf '\n\033[1mOPTIONS\033[0m\n'
 	@printf '  \033[1;36m%-23s\033[0m %-7s %s\n' "CONTAINER=<name>"      ""       "Pick one instance when several clones of this repo exist. 'make status' lists them."
 	@printf '  \033[1;36m%-23s\033[0m %-7s %s\n' "FORCE=1"               ""       "Proceed past the unpushed-work and uncommitted-config guards."
@@ -89,14 +116,24 @@ help:
 	@printf '  \033[1;36m%-23s\033[0m %-7s %s\n' "NO_CACHE=1"            ""       "What the no-cache targets set. Works with build and rebuild directly."
 	@printf '\n\033[1mPREREQUISITES\033[0m\n'
 	@printf '  %-23s %s\n' "container targets"     "docker"
-	@printf '  %-23s %s\n' "remote engine"         "aws, ssh, session-manager-plugin, and REMOTE_INSTANCE_ID in shell.env"
+	@printf '  %-23s %s\n' "remote engine"         "aws, session-manager-plugin, and REMOTE_INSTANCE_ID in shell.env"
 	@printf '  %-23s %s\n' "build and rebuild"     "devcontainer CLI, git, jq, python3      npm install -g @devcontainers/cli"
 	@printf '  %-23s %s\n' "lint"                  "uv                                      brew install uv"
+	@printf '  %-23s %s\n' "test"                  "uv, zsh                                 uv: $(TEST_INSTALL_HINT_uv)   zsh: $(TEST_INSTALL_HINT_zsh)"
 	@printf '  %s\n' "Every target checks what it needs and fails with the command that installs it."
 	@printf '\n'
 
 connect:
-	@$(TUNNEL_SH)
+	@set -euo pipefail; \
+	transport="$${DEVCONTAINER_TRANSPORT:-ssm}"; \
+	case "$$transport" in \
+		ssm) $(PROXY_ENV) PYTHONPATH=$(DEVCONTAINER_SCRIPTS_DIR) python3 -m devcontainer_config.transport connect \
+			--instance-id "$$REMOTE_INSTANCE_ID" --context "$(REMOTE_CONTEXT)" \
+			--profile "$$REMOTE_AWS_PROFILE" --region "$$REMOTE_AWS_REGION" ;; \
+		*) printf '\033[0;31m[ERROR]\033[0m DEVCONTAINER_TRANSPORT="%s" is not recognized.\n' "$$transport" >&2; \
+		   printf '        Accepted value: ssm. The ssh transport was removed at cutover.\n' >&2; \
+		   exit 1 ;; \
+	esac
 
 disconnect:
 	@docker context inspect $(LOCAL_CONTEXT) > /dev/null 2>&1 || { \
@@ -107,26 +144,23 @@ disconnect:
 	}
 	@docker context use $(LOCAL_CONTEXT)
 
-shell:
-	@$(SHELL_SH)
-
 status:
-	@$(CONTAINER_SH) status
+	@INSTANCE="$(INSTANCE)" $(CONTAINER_SH) status
 
 start:
-	@$(CONTAINER_SH) start
+	@INSTANCE="$(INSTANCE)" $(CONTAINER_SH) start
 
 stop:
-	@$(CONTAINER_SH) stop
+	@INSTANCE="$(INSTANCE)" $(CONTAINER_SH) stop
 
 restart:
-	@$(CONTAINER_SH) restart
+	@INSTANCE="$(INSTANCE)" $(CONTAINER_SH) restart
 
 rename:
-	@$(CONTAINER_SH) rename
+	@INSTANCE="$(INSTANCE)" $(CONTAINER_SH) rename
 
 check:
-	@$(CONTAINER_SH) check
+	@INSTANCE="$(INSTANCE)" $(CONTAINER_SH) check
 
 init:
 	@printf '\033[0;36m[INIT]\033[0m creating config files from their examples\n'
@@ -165,16 +199,16 @@ keybindings:
 	@python3 $(KEYBINDINGS_PY)
 
 up:
-	@$(CONTAINER_SH) up
+	@INSTANCE="$(INSTANCE)" $(CONTAINER_SH) up
 
 build:
-	@$(CONTAINER_SH) build
+	@INSTANCE="$(INSTANCE)" $(CONTAINER_SH) build
 
 build-no-cache:
-	@NO_CACHE=1 $(CONTAINER_SH) build
+	@INSTANCE="$(INSTANCE)" NO_CACHE=1 $(CONTAINER_SH) build
 
 rebuild-no-cache:
-	@NO_CACHE=1 $(CONTAINER_SH) rebuild
+	@INSTANCE="$(INSTANCE)" NO_CACHE=1 $(CONTAINER_SH) rebuild
 
 local: disconnect
 	@printf '\033[0;32m[DONE]\033[0m targeting the local engine, "make build" bind-mounts this folder\n'
@@ -183,22 +217,58 @@ remote: connect
 	@printf '\033[0;32m[DONE]\033[0m targeting the remote engine, "make build" clones into a volume\n'
 
 reopen:
-	@$(CONTAINER_SH) reopen
+	@INSTANCE="$(INSTANCE)" $(CONTAINER_SH) reopen
+
+exec:
+	@INSTANCE="$(INSTANCE)" $(CONTAINER_SH) exec
+
+instances:
+	@PYTHONPATH=$(DEVCONTAINER_SCRIPTS_DIR) python3 -m devcontainer_config.cli instances
+
+shell:
+	@printf '\033[0;31m[ERROR]\033[0m make shell is gone: the EC2 host has no interactive access path.\n' >&2
+	@printf '        The SSH transport was removed at cutover, and the remote engine is now\n' >&2
+	@printf '        reached over an SSM port forward that carries the docker API only.\n' >&2
+	@printf '        For a shell inside the container:  \033[1mmake exec\033[0m\n' >&2
+	@exit 1
 
 vscode-server:
-	@$(CONTAINER_SH) vscode-server
+	@INSTANCE="$(INSTANCE)" $(CONTAINER_SH) vscode-server
 
 push-git-creds:
-	@$(CONTAINER_SH) push-git-creds
+	@INSTANCE="$(INSTANCE)" $(CONTAINER_SH) push-git-creds
 
 clean:
-	@$(CONTAINER_SH) clean
+	@INSTANCE="$(INSTANCE)" $(CONTAINER_SH) clean
 
 rebuild:
-	@$(CONTAINER_SH) rebuild
+	@INSTANCE="$(INSTANCE)" $(CONTAINER_SH) rebuild
 
 push-secrets:
-	@$(SECRETS_SH)
+	@INSTANCE="$(INSTANCE)" $(SECRETS_SH)
+
+# spec Section 4.1.2 (E6-F1-S1-T2): client and CA expiry per instance, the
+# inspection half of the `certs` module. Exit 0 when every certificate is
+# outside the warning window (including a RENEW row for one still valid but
+# inside it), exit 1 when any has expired.
+cert-status:
+	@PYTHONPATH=$(DEVCONTAINER_SCRIPTS_DIR) python3 -m devcontainer_config.certs status
+
+# spec Section 4.5: the issuing half. Separate targets, not one idempotent
+# "ensure": each underlying operation refuses to overwrite existing material,
+# so running the wrong one names the path that already exists rather than
+# silently replacing a certificate the other half of the pair still trusts.
+cert-ca:
+	@INSTANCE="$(INSTANCE)" $(CERTS_SH) ca
+
+cert-client:
+	@INSTANCE="$(INSTANCE)" $(CERTS_SH) client
+
+cert-publish:
+	@INSTANCE="$(INSTANCE)" $(CERTS_SH) publish
+
+cert-install:
+	@INSTANCE="$(INSTANCE)" $(CERTS_SH) install
 
 proxy-start:
 	@$(PROXY_ENV) $(PROXY_SH) start
@@ -212,14 +282,33 @@ proxy-restart:
 proxy-status:
 	@$(PROXY_ENV) $(PROXY_SH) status
 
-lint: lint-private lint-nested lint-json lint-sh lint-dispatch lint-md lint-spell
+lint: lint-private lint-nested lint-json lint-sh lint-dispatch lint-md lint-spell lint-secrets
 	@printf '\033[0;32m[DONE]\033[0m all checks passed\n'
 
 # The single entry point external automation calls to decide whether this
 # checkout is green. Kept separate from lint so that adding a test suite widens
 # what "green" means without every caller having to learn a new target name.
-validate: lint
+validate: lint test
 	@printf '\033[0;32m[DONE]\033[0m validate passed\n'
+
+# Host only, hermetic: no docker, no AWS, no network (AC-10.14). Every tool
+# named in the "test" PREREQUISITES row above is checked here, in one loop
+# over TEST_PREREQUISITE_TOOLS, before pytest ever runs, so a missing
+# prerequisite fails with the command that installs it instead of failing
+# deep inside the suite with no such hint.
+test:
+	@printf '\033[0;36m[TEST]\033[0m running pytest suite\n'
+	@for tool in $(TEST_PREREQUISITE_TOOLS); do \
+		command -v "$$tool" > /dev/null 2>&1 && continue; \
+		case "$$tool" in \
+			uv) hint="$(TEST_INSTALL_HINT_uv)" ;; \
+			zsh) hint="$(TEST_INSTALL_HINT_zsh)" ;; \
+		esac; \
+		printf '\033[0;31m[ERROR]\033[0m %s is not installed.\n' "$$tool" >&2; \
+		printf '        Install it: %s\n' "$$hint" >&2; \
+		exit 1; \
+	done
+	@$(PYTEST) tests
 
 lint-nested:
 	@printf '\033[0;36m[LINT]\033[0m no nested repos tracked\n'
@@ -268,6 +357,12 @@ lint-private:
 	done
 	@printf '  none tracked\n'
 
+# Staged content by default (spec Section 4.6); RANGE=<a>..<b> scans every
+# commit in that range instead, oldest first (E2-F1-S2-T1). Exit 1 on any
+# finding; there is no ignore list.
+lint-secrets:
+	@PYTHONPATH=$(DEVCONTAINER_SCRIPTS_DIR) python3 -m devcontainer_config.cli lint-secrets $(if $(RANGE),--range $(RANGE),)
+
 format:
 	@printf '\033[0;36m[FORMAT]\033[0m markdown (%s files)\n' "$(words $(MD_FILES))"
 	@$(MARKDOWN_LINT) fix $(MD_FILES) || true
@@ -287,13 +382,21 @@ spell-fix:
 
 hooks-run: lint
 
+# Runs on pre-push (E2-F2-S1-T1): the same lint pre-commit runs, then a
+# secrets scan of every commit in the pushed range, derived from git's own
+# pre-push stdin and read by devcontainer_config.githooks. lint runs first
+# so a pre-push failure never reaches the (slower) history scan needlessly;
+# git's stdin flows through both recipe lines unredirected, into whichever
+# one actually reads it.
+hooks-run-push: lint
+	@PYTHONPATH=$(DEVCONTAINER_SCRIPTS_DIR) python3 -m devcontainer_config.cli hooks-pre-push
+
+# Hook content lives in devcontainer_config.githooks, not here (E2-F2-S1-T1):
+# this delegates instead of writing hook bodies inline, so that content has
+# exactly one source. install_hooks is idempotent and refuses to overwrite a
+# hook it did not author.
 hooks-install:
-	@mkdir -p .git/hooks
-	@for hook in pre-commit pre-push; do \
-		printf '#!/usr/bin/env sh\n# Installed by "make hooks-install". Runs the same checks as "make hooks-run".\nexec make hooks-run\n' > .git/hooks/$$hook; \
-		chmod +x .git/hooks/$$hook; \
-		printf '\033[0;32m[DONE]\033[0m installed .git/hooks/%s\n' "$$hook"; \
-	done
+	@PYTHONPATH=$(DEVCONTAINER_SCRIPTS_DIR) python3 -m devcontainer_config.cli hooks-install
 
 hooks-uninstall:
 	@rm -f .git/hooks/pre-commit .git/hooks/pre-push

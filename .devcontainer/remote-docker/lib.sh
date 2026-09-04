@@ -60,16 +60,23 @@ rd_load_config() {
 # Only remote operations need the EC2 identity, so this is separate from
 # rd_load_config: local-engine commands must keep working on a machine where
 # none of it is configured.
+# The region and profile every AWS call needs, and nothing more. An operation
+# that reaches AWS but never names the instance over the wire -- publishing
+# this instance's TLS material, which the resolver addresses by name -- must
+# require only these, or an unrelated placeholder blocks work that does not
+# depend on it.
+rd_require_aws_config() {
+  : "${REMOTE_AWS_REGION:?REMOTE_AWS_REGION must be set}"
+  : "${REMOTE_AWS_PROFILE:?REMOTE_AWS_PROFILE must be set}"
+}
+
 rd_require_remote_config() {
   case "${REMOTE_INSTANCE_ID:-}" in
     "<"*">") rd_die "REMOTE_INSTANCE_ID is still the placeholder ${REMOTE_INSTANCE_ID}. Set it in shell.env (see shell.env.example) or export it." ;;
   esac
 
   : "${REMOTE_INSTANCE_ID:?REMOTE_INSTANCE_ID must be set}"
-  : "${REMOTE_AWS_REGION:?REMOTE_AWS_REGION must be set}"
-  : "${REMOTE_AWS_PROFILE:?REMOTE_AWS_PROFILE must be set}"
-  : "${REMOTE_SSH_ALIAS:?REMOTE_SSH_ALIAS must be set}"
-  : "${REMOTE_USER:?REMOTE_USER must be set}"
+  rd_require_aws_config
   : "${REMOTE_DOCKER_CONTEXT:?REMOTE_DOCKER_CONTEXT must be set}"
 }
 
@@ -81,7 +88,65 @@ rd_require_cmd() {
 rd_check_prereqs() {
   rd_require_cmd aws "Install: https://docs.aws.amazon.com/cli/latest/userguide/getting-started-install.html"
   rd_require_cmd session-manager-plugin "Install: https://docs.aws.amazon.com/systems-manager/latest/userguide/session-manager-working-with-install-plugin.html"
-  rd_require_cmd ssh "Install OpenSSH client."
+}
+
+# The single place any shell caller turns INSTANCE / DEFAULT_REMOTE_INSTANCE
+# into a concrete instance and its addressing block. Every remote entry point
+# calls this exactly once, at its own start, and then reads the exported
+# values -- rather than each script deriving a context name or parameter
+# prefix from PROJECT_NAME on its own, which is how two callers end up
+# addressing different instances while believing they agree.
+#
+# The resolver is `devcontainer_config.cli resolve-instance`, which owns the
+# four-step resolution order. This function adds no policy of its own; it
+# runs that once, exports what it printed, and translates a failure into the
+# repository's own rd_fail shape so the caller sees a remedy rather than a
+# traceback.
+# The resolving half, without the diagnosis: returns non-zero when nothing can
+# be resolved instead of ending the process. A caller that has not yet decided
+# whether it is even talking to a remote engine needs to ask the question
+# without a repository that configures no instances at all becoming an error.
+rd_resolve_instance_quiet() {
+  [ -n "${RD_INSTANCE_RESOLVED:-}" ] && return 0
+
+  local repo_root scripts_dir block line
+  repo_root="$(cd "${RD_DIR}/../.." && pwd)"
+  scripts_dir="${repo_root}/.claude/plugins/devcontainer/scripts"
+
+  block="$(PYTHONPATH="$scripts_dir" python3 -m devcontainer_config.cli resolve-instance 2>&1)" \
+    || { RD_RESOLVE_DIAGNOSIS="$block"; return 1; }
+
+  # Only KEY=VALUE lines are consumed; a warning the resolver printed to
+  # stderr has already reached the caller and must not be eval'd.
+  while IFS= read -r line; do
+    case "$line" in
+      [A-Z_]*=*) export "${line?}" ;;
+    esac
+  done <<EOF_BLOCK
+$block
+EOF_BLOCK
+
+  [ -n "${INSTANCE:-}" ] || { RD_RESOLVE_DIAGNOSIS=""; return 1; }
+
+  RD_INSTANCE_RESOLVED=1
+  export RD_INSTANCE_RESOLVED
+}
+
+rd_resolve_instance() {
+  rd_resolve_instance_quiet && return 0
+
+  [ -n "${RD_RESOLVE_DIAGNOSIS:-}" ] || rd_fail "The resolver returned no instance" \
+    "It exited successfully but printed no INSTANCE line, so there is nothing to act on." \
+    "" \
+    "What is configured:       ${RD_BOLD}make instances${RD_RESET}"
+
+  rd_fail "Could not resolve which instance to act on" \
+    "$(printf '%s' "$RD_RESOLVE_DIAGNOSIS" | sed -n '1,6p')" \
+    "" \
+    "Name one explicitly:      ${RD_BOLD}INSTANCE=<name> make <target>${RD_RESET}" \
+    "Or set a default:         ${RD_BOLD}export DEFAULT_REMOTE_INSTANCE=<name>${RD_RESET}" \
+    "" \
+    "What is configured:       ${RD_BOLD}make instances${RD_RESET}"
 }
 
 rd_check_aws_auth() {
@@ -89,48 +154,6 @@ rd_check_aws_auth() {
     || rd_die "AWS credentials for profile '$REMOTE_AWS_PROFILE' are not valid. Run: aws sso login --profile $REMOTE_AWS_PROFILE"
 }
 
-rd_install_ssh_config() {
-  [ -n "${REMOTE_SSH_KEY_PATH:-}" ] || rd_die "REMOTE_SSH_KEY_PATH must be set (private key for the EC2 key pair)"
-  [ -f "$REMOTE_SSH_KEY_PATH" ] || rd_die "SSH private key not found at $REMOTE_SSH_KEY_PATH (set REMOTE_SSH_KEY_PATH to your key for the '<your-key-pair-name>' key pair)"
-
-  local ssh_dir="${HOME}/.ssh"
-  local ssh_config="${ssh_dir}/config"
-  local marker="general-dev remote-docker ${REMOTE_SSH_ALIAS}"
-  mkdir -p "$ssh_dir"
-  chmod 700 "$ssh_dir"
-  touch "$ssh_config"
-  chmod 600 "$ssh_config"
-
-  local tmp_config
-  tmp_config="$(mktemp)"
-  awk -v marker="$marker" '
-    index($0, ">>> " marker " >>>") { skip = 1; next }
-    index($0, "<<< " marker " <<<") { skip = 0; next }
-    !skip { print }
-  ' "$ssh_config" > "$tmp_config"
-
-  {
-    echo "# >>> ${marker} >>>"
-    echo "Host ${REMOTE_SSH_ALIAS}"
-    echo "  HostName ${REMOTE_INSTANCE_ID}"
-    echo "  User ${REMOTE_USER}"
-    echo "  IdentityFile ${REMOTE_SSH_KEY_PATH}"
-    echo "  IdentitiesOnly yes"
-    echo "  ProxyCommand sh -c \"aws ssm start-session --target %h --document-name AWS-StartSSHSession --parameters 'portNumber=%p' --region ${REMOTE_AWS_REGION} --profile ${REMOTE_AWS_PROFILE}\""
-    echo "  ConnectTimeout ${REMOTE_SSH_CONNECT_TIMEOUT:-30}"
-    echo "  ServerAliveInterval 15"
-    echo "  ServerAliveCountMax 3"
-    echo "  StrictHostKeyChecking accept-new"
-    echo "  ControlMaster auto"
-    echo "  ControlPath ~/.ssh/cm-%C"
-    echo "  ControlPersist ${REMOTE_SSH_CONTROL_PERSIST:-10m}"
-    echo "# <<< ${marker} <<<"
-  } >> "$tmp_config"
-
-  mv "$tmp_config" "$ssh_config"
-  chmod 600 "$ssh_config"
-  rd_ok "SSH config block installed for Host '${REMOTE_SSH_ALIAS}' -> ${REMOTE_INSTANCE_ID}"
-}
 
 rd_run() {
   local translator="$1" err status=0 detail
@@ -160,11 +183,11 @@ rd_engine_diagnosis() {
   fi
   if command -v aws > /dev/null 2>&1 \
     && ! aws sts get-caller-identity --profile "$REMOTE_AWS_PROFILE" --region "$REMOTE_AWS_REGION" > /dev/null 2>&1; then
-    printf 'the AWS session for profile '\''%s'\'' has expired, which breaks the tunnel.\n' "$REMOTE_AWS_PROFILE"
+    printf 'the AWS session for profile '\''%s'\'' has expired, which breaks the port forward.\n' "$REMOTE_AWS_PROFILE"
     printf 'aws sso login --profile %s, then make connect\n' "$REMOTE_AWS_PROFILE"
     return 0
   fi
-  printf 'the SSH-over-SSM tunnel to %s has dropped.\n' "$REMOTE_INSTANCE_ID"
+  printf 'the SSM port forward to %s has dropped.\n' "$REMOTE_INSTANCE_ID"
   printf 'make connect\n'
 }
 

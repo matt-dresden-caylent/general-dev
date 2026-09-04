@@ -659,6 +659,25 @@ rdc_reopen() {
   rd_ok "VS Code opening the workspace directly, no Attach step needed"
 }
 
+rdc_exec_shell() {
+  # An interactive shell inside the container, on whichever engine the active
+  # context points at. This is the replacement for the host shell the cutover
+  # removed: the container is where work happens, and the host deliberately has
+  # no human access path left.
+  #
+  # Named rdc_exec_shell, not rdc_exec: that name is already taken above by the
+  # non-interactive helper rdc_check and others use to run a single command in
+  # a container and capture its output.
+  local id
+  id="$(rdc_require_container)" || exit $?
+  docker exec -it "$id" "$CONTAINER_SHELL" \
+    || rd_fail "The shell '${CONTAINER_SHELL}' could not be started in the container" \
+      "The container is running; the shell itself failed to start." \
+      "" \
+      "If the image does not ship that shell, name one it does have:" \
+      "  ${RD_BOLD}CONTAINER_SHELL=/bin/bash make exec${RD_RESET}"
+}
+
 rdc_up() {
   rd_require_cmd docker "Install the docker CLI: https://docs.docker.com/engine/install/"
 
@@ -667,16 +686,18 @@ rdc_up() {
 
   if ! docker info > /dev/null 2>&1; then
     if [ "$backend" = "remote" ]; then
-      rd_log "remote engine is not answering, refreshing the tunnel"
-      "${RD_DIR}/docker-tunnel.sh" > /dev/null \
-        || rd_fail "The tunnel could not be refreshed, so the remote engine stays unreachable" \
+      rd_log "remote engine is not answering, refreshing the port forward"
+      PYTHONPATH="${RD_DIR}/../../.claude/plugins/devcontainer/scripts" python3 -m devcontainer_config.transport connect \
+        --instance-id "$REMOTE_INSTANCE_ID" --context "$REMOTE_DOCKER_CONTEXT" \
+        --profile "$REMOTE_AWS_PROFILE" --region "$REMOTE_AWS_REGION" > /dev/null \
+        || rd_fail "The port forward could not be refreshed, so the remote engine stays unreachable" \
           "The reason is in the output above." \
           "" \
           "If it is an authentication failure:" \
           "  ${RD_BOLD}aws sso login --profile ${REMOTE_AWS_PROFILE}${RD_RESET}, then ${RD_BOLD}make up${RD_RESET}" \
           "" \
           "If the instance is stopped, start it, then ${RD_BOLD}make connect${RD_RESET}."
-      rd_ok "tunnel refreshed"
+      rd_ok "port forward refreshed"
     else
       local diagnosis
       diagnosis="$(rd_engine_diagnosis "$(docker context show)")"
@@ -750,14 +771,22 @@ rdc_build_remote() {
 
   rdc_seed_volume "$volume" "$branch" "$url"
 
+  # The override carries the resolved Parameter Store prefix into the
+  # container, not just the volume mount. Without it the create-time bootstrap
+  # falls back to /devcontainer/$(basename "$(pwd)") -- the workspace folder
+  # name -- and an instance whose name differs from the project folder reads a
+  # different environment's secrets entirely. Observed: instance 'sandbox'
+  # bootstrapped from /devcontainer/general-dev/shell.env.
   RDC_OVERRIDE_CONFIG="$(mktemp "${TMPDIR:-/tmp}/devcontainer-override.XXXXXX")"
   trap 'rm -f "$RDC_OVERRIDE_CONFIG"' EXIT
   rdc_read_configuration \
     | jq --arg mount "source=${volume},target=${CONTAINER_WORKSPACES_ROOT},type=volume" \
       --arg configdir "${REPO_ROOT}/.devcontainer" \
+      --arg ssmprefix "${DEVCONTAINER_SSM_PREFIX}" \
       '.configuration
        | del(.configFilePath)
        | .workspaceMount = $mount
+       | .containerEnv = ((.containerEnv // {}) + {DEVCONTAINER_SSM_PREFIX: $ssmprefix})
        | if .build.dockerfile then
            .build.dockerfile = "\($configdir)/\(.build.dockerfile)"
            | .build.context = (if .build.context then "\($configdir)/\(.build.context)" else $configdir end)
@@ -859,10 +888,36 @@ rdc_rebuild() {
 
 RDC_COMMAND="${1:-}"
 
-# Anything aimed at the remote engine needs the EC2 identity before docker is
-# even reachable; local commands must not, so this cannot live in rd_load_config.
-if command -v docker > /dev/null 2>&1 && [ "$(rdc_backend)" = "remote" ]; then
-  rd_require_remote_config
+# Resolve before classifying, not after. rdc_backend answers "is the active
+# docker context this instance's context", and only the resolver knows what
+# that context is. Asking first compared the active context against whatever
+# config.env defaulted REMOTE_DOCKER_CONTEXT to, so every instance whose name
+# did not happen to match that default was classified `local`: `make build`
+# then took the bind-mount path and asked the remote engine to mount a path
+# that exists only on this laptop.
+#
+# The quiet form is deliberate. A repository that configures no instances at
+# all is a legitimately local one, not an error, and it must still be able to
+# build against its local engine.
+if command -v docker > /dev/null 2>&1; then
+  # Resolve once, here, and let every downstream reader use the result. The
+  # two names below were previously derived from PROJECT_NAME independently
+  # by this script and by push-secrets.sh, which meant two callers could
+  # address different instances while each believed it was addressing "the"
+  # one. Assigning them from the single resolved block removes that split
+  # without rewriting every use site.
+  if rd_resolve_instance_quiet; then
+    REMOTE_DOCKER_CONTEXT="$DOCKER_CONTEXT"
+    DEVCONTAINER_SSM_PREFIX="${PARAMETER_PREFIX%/}"
+    export REMOTE_DOCKER_CONTEXT DEVCONTAINER_SSM_PREFIX
+  fi
+
+  # Anything aimed at the remote engine needs the EC2 identity before docker
+  # is even reachable; local commands must not, so this cannot live in
+  # rd_load_config.
+  if [ "$(rdc_backend)" = "remote" ]; then
+    rd_require_remote_config
+  fi
 fi
 
 case "$RDC_COMMAND" in
@@ -876,8 +931,9 @@ case "$RDC_COMMAND" in
   reopen) rdc_require_docker && rdc_reopen ;;
   vscode-server) rdc_require_docker && rdc_seed_vscode_server ;;
   up) rdc_up ;;
+  exec) rdc_require_docker && rdc_exec_shell ;;
   push-git-creds) rdc_require_docker && rdc_push_git_creds ;;
   clean) rdc_require_docker && rdc_clean ;;
   rebuild) rdc_require_docker && rdc_rebuild ;;
-  *) rd_die "usage: $(basename "$0") <up|status|start|stop|restart|rename|reopen|vscode-server|check|build|push-git-creds|clean|rebuild>" ;;
+  *) rd_die "usage: $(basename "$0") <up|exec|status|start|stop|restart|rename|reopen|vscode-server|check|build|push-git-creds|clean|rebuild>" ;;
 esac
